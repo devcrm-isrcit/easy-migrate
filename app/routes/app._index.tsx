@@ -15,7 +15,7 @@ import {
   Text,
   TextField,
 } from "@shopify/polaris";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
   useFetcher,
   useLoaderData,
@@ -47,6 +47,18 @@ import {
   validateShopDomain,
 } from "../lib/definition-sync/shop-domain.server";
 import { authenticate } from "../shopify.server";
+
+const stickyActionBarStyle: CSSProperties = {
+  position: "sticky",
+  top: 0,
+  zIndex: 20,
+  background: "var(--p-color-bg-surface)",
+  padding: "12px 0",
+};
+
+const selectableRowStyle: CSSProperties = {
+  cursor: "pointer",
+};
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
@@ -720,30 +732,32 @@ export default function DefinitionSyncDashboard() {
                   {allSelectableCount > 0 ? (
                     <Card>
                       <BlockStack gap="400">
-                        <InlineStack
-                          align="space-between"
-                          blockAlign="center"
-                        >
-                          <Text as="h2" variant="headingMd">
-                            Select definitions to sync
-                          </Text>
-                          <InlineStack gap="200">
-                            <Button
-                              onClick={toggleSelectAll}
-                              disabled={isSyncing}
-                            >
-                              {allSelected ? "Clear all" : "Select all"}
-                            </Button>
-                            <Button
-                              variant="primary"
-                              onClick={handleSync}
-                              loading={isSyncing}
-                              disabled={isSaving || totalSelectedCount === 0}
-                            >
-                              Sync selected ({String(totalSelectedCount)})
-                            </Button>
+                        <div style={stickyActionBarStyle}>
+                          <InlineStack
+                            align="space-between"
+                            blockAlign="center"
+                          >
+                            <Text as="h2" variant="headingMd">
+                              Select definitions to sync
+                            </Text>
+                            <InlineStack gap="200">
+                              <Button
+                                onClick={toggleSelectAll}
+                                disabled={isSyncing}
+                              >
+                                {allSelected ? "Clear all" : "Select all"}
+                              </Button>
+                              <Button
+                                variant="primary"
+                                onClick={handleSync}
+                                loading={isSyncing}
+                                disabled={isSaving || totalSelectedCount === 0}
+                              >
+                                Sync selected ({String(totalSelectedCount)})
+                              </Button>
+                            </InlineStack>
                           </InlineStack>
-                        </InlineStack>
+                        </div>
 
                         <Checkbox
                           label="Copy metaobject entries (content/values)"
@@ -790,33 +804,40 @@ export default function DefinitionSyncDashboard() {
                                 borderRadius="200"
                                 background="bg-surface-secondary"
                               >
-                                <InlineStack
-                                  align="space-between"
-                                  blockAlign="center"
+                                <div
+                                  onClick={() => toggleMetaobjectSelection(item.type)}
+                                  style={selectableRowStyle}
                                 >
-                                  <BlockStack gap="050">
-                                    <Text
-                                      as="span"
-                                      variant="bodyMd"
-                                      fontWeight="semibold"
-                                    >
-                                      {item.name}
-                                    </Text>
-                                    <Text as="span" variant="bodySm" tone="subdued">
-                                      Type: {item.type} ·{" "}
-                                      {item.fieldDefinitions.length} fields
-                                    </Text>
-                                  </BlockStack>
-                                  <Checkbox
-                                    label=""
-                                    checked={selectedMetaobjectTypes.includes(
-                                      item.type,
-                                    )}
-                                    onChange={() =>
-                                      toggleMetaobjectSelection(item.type)
-                                    }
-                                  />
-                                </InlineStack>
+                                  <InlineStack
+                                    align="space-between"
+                                    blockAlign="center"
+                                  >
+                                    <BlockStack gap="050">
+                                      <Text
+                                        as="span"
+                                        variant="bodyMd"
+                                        fontWeight="semibold"
+                                      >
+                                        {item.name}
+                                      </Text>
+                                      <Text as="span" variant="bodySm" tone="subdued">
+                                        Type: {item.type} ·{" "}
+                                        {item.fieldDefinitions.length} fields
+                                      </Text>
+                                    </BlockStack>
+                                    <div onClick={(event) => event.stopPropagation()}>
+                                      <Checkbox
+                                        label=""
+                                        checked={selectedMetaobjectTypes.includes(
+                                          item.type,
+                                        )}
+                                        onChange={() =>
+                                          toggleMetaobjectSelection(item.type)
+                                        }
+                                      />
+                                    </div>
+                                  </InlineStack>
+                                </div>
                               </Box>
                             ))}
                           </BlockStack>
@@ -834,32 +855,41 @@ export default function DefinitionSyncDashboard() {
                                 borderRadius="200"
                                 background="bg-surface-secondary"
                               >
-                                <InlineStack
-                                  align="space-between"
-                                  blockAlign="center"
+                                <div
+                                  onClick={() =>
+                                    toggleMetaobjectSelection(item.source.type)
+                                  }
+                                  style={selectableRowStyle}
                                 >
-                                  <BlockStack gap="050">
-                                    <Text
-                                      as="span"
-                                      variant="bodyMd"
-                                      fontWeight="semibold"
-                                    >
-                                      {item.source.name}
-                                    </Text>
-                                    <Text as="span" variant="bodySm" tone="subdued">
-                                      Type: {item.source.type} · Definition exists, entries will be copied
-                                    </Text>
-                                  </BlockStack>
-                                  <Checkbox
-                                    label=""
-                                    checked={selectedMetaobjectTypes.includes(
-                                      item.source.type,
-                                    )}
-                                    onChange={() =>
-                                      toggleMetaobjectSelection(item.source.type)
-                                    }
-                                  />
-                                </InlineStack>
+                                  <InlineStack
+                                    align="space-between"
+                                    blockAlign="center"
+                                  >
+                                    <BlockStack gap="050">
+                                      <Text
+                                        as="span"
+                                        variant="bodyMd"
+                                        fontWeight="semibold"
+                                      >
+                                        {item.source.name}
+                                      </Text>
+                                      <Text as="span" variant="bodySm" tone="subdued">
+                                        Type: {item.source.type} · Definition exists, entries will be copied
+                                      </Text>
+                                    </BlockStack>
+                                    <div onClick={(event) => event.stopPropagation()}>
+                                      <Checkbox
+                                        label=""
+                                        checked={selectedMetaobjectTypes.includes(
+                                          item.source.type,
+                                        )}
+                                        onChange={() =>
+                                          toggleMetaobjectSelection(item.source.type)
+                                        }
+                                      />
+                                    </div>
+                                  </InlineStack>
+                                </div>
                               </Box>
                             ))}
                           </BlockStack>
@@ -884,37 +914,50 @@ export default function DefinitionSyncDashboard() {
                                   borderRadius="200"
                                   background="bg-surface-secondary"
                                 >
-                                  <InlineStack
-                                    align="space-between"
-                                    blockAlign="center"
+                                  <div
+                                    onClick={() =>
+                                      toggleMetafieldSelection(identifier)
+                                    }
+                                    style={selectableRowStyle}
                                   >
-                                    <BlockStack gap="050">
-                                      <Text
-                                        as="span"
-                                        variant="bodyMd"
-                                        fontWeight="semibold"
+                                    <InlineStack
+                                      align="space-between"
+                                      blockAlign="center"
+                                    >
+                                      <BlockStack gap="050">
+                                        <Text
+                                          as="span"
+                                          variant="bodyMd"
+                                          fontWeight="semibold"
+                                        >
+                                          {item.name}
+                                        </Text>
+                                        <Text
+                                          as="span"
+                                          variant="bodySm"
+                                          tone="subdued"
+                                        >
+                                          {item.ownerType} · {item.namespace}.
+                                          {item.key} · {item.type}
+                                        </Text>
+                                      </BlockStack>
+                                      <div
+                                        onClick={(event) =>
+                                          event.stopPropagation()
+                                        }
                                       >
-                                        {item.name}
-                                      </Text>
-                                      <Text
-                                        as="span"
-                                        variant="bodySm"
-                                        tone="subdued"
-                                      >
-                                        {item.ownerType} · {item.namespace}.
-                                        {item.key} · {item.type}
-                                      </Text>
-                                    </BlockStack>
-                                    <Checkbox
-                                      label=""
-                                      checked={selectedMetafieldKeys.includes(
-                                        identifier,
-                                      )}
-                                      onChange={() =>
-                                        toggleMetafieldSelection(identifier)
-                                      }
-                                    />
-                                  </InlineStack>
+                                        <Checkbox
+                                          label=""
+                                          checked={selectedMetafieldKeys.includes(
+                                            identifier,
+                                          )}
+                                          onChange={() =>
+                                            toggleMetafieldSelection(identifier)
+                                          }
+                                        />
+                                      </div>
+                                    </InlineStack>
+                                  </div>
                                 </Box>
                               );
                             })}
