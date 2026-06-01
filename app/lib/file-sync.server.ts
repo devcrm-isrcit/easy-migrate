@@ -548,6 +548,9 @@ export async function runFileMigration({
           jobId: job.id,
           status: "skipped",
           identifier,
+          contentType: file.contentType,
+          sourceUrl: file.sourceUrl,
+          alt: file.alt,
           message,
         });
         continue;
@@ -569,6 +572,9 @@ export async function runFileMigration({
           jobId: job.id,
           status: "created",
           identifier,
+          contentType: file.contentType,
+          sourceUrl: file.sourceUrl,
+          alt: file.alt,
           message,
         });
       } catch (error) {
@@ -584,6 +590,9 @@ export async function runFileMigration({
           jobId: job.id,
           status: "failed",
           identifier,
+          contentType: file.contentType,
+          sourceUrl: file.sourceUrl,
+          alt: file.alt,
           message,
         });
       }

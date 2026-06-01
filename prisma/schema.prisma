@@ -102,6 +102,9 @@ model FileSyncLog {
   jobId       String
   status      String
   identifier  String
+  contentType String?
+  sourceUrl   String?
+  alt         String?
   message     String
   createdAt   DateTime   @default(now())
   job         FileSyncJob @relation(fields: [jobId], references: [id], onDelete: Cascade)

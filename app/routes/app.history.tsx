@@ -32,6 +32,7 @@ import {
   getFileSyncLogs,
   getStoreConnectionHistory,
 } from "../lib/history.server";
+import { targetAdminGraphql } from "../lib/definition-sync/target-admin.server";
 import { authenticate } from "../shopify.server";
 
 const JOBS_PER_PAGE = 10;
@@ -61,6 +62,9 @@ interface FileHistoryLog {
   id: string;
   status: string;
   identifier: string;
+  contentType: string | null;
+  sourceUrl: string | null;
+  alt: string | null;
   message: string;
   createdAt: string;
 }
@@ -99,6 +103,21 @@ interface ConnectionHistoryEvent {
   createdAt: string;
 }
 
+interface HistoryTargetFile {
+  contentType: string;
+  sourceUrl: string;
+  alt: string | null;
+}
+
+const historyMediaFrameStyle = {
+  width: 140,
+  height: 96,
+  borderRadius: 12,
+  overflow: "hidden",
+  background: "var(--p-color-bg-surface-secondary)",
+  border: "1px solid var(--p-color-border-secondary)",
+} as const;
+
 function isHistoryTab(value: string | null): value is HistoryTab {
   return HISTORY_TABS.some((tab) => tab.id === value);
 }
@@ -110,8 +129,199 @@ function getDefinitionLogLabel(itemType: string) {
   return "Metaobject";
 }
 
+function isPreviewableImage(log: FileHistoryLog) {
+  const source = log.sourceUrl?.toLowerCase() ?? "";
+
+  return (
+    log.contentType === "IMAGE" ||
+    source.endsWith(".svg") ||
+    source.endsWith(".png") ||
+    source.endsWith(".jpg") ||
+    source.endsWith(".jpeg") ||
+    source.endsWith(".gif") ||
+    source.endsWith(".webp")
+  );
+}
+
+function FileHistoryPreview({ log }: { log: FileHistoryLog }) {
+  if (!log.sourceUrl) {
+    return (
+      <Box
+        padding="200"
+        background="bg-surface-secondary"
+        borderRadius="200"
+      >
+        <Text as="span" variant="bodySm" tone="subdued">
+          No preview
+        </Text>
+      </Box>
+    );
+  }
+
+  if (isPreviewableImage(log)) {
+    return (
+      <div style={historyMediaFrameStyle}>
+        <img
+          src={log.sourceUrl}
+          alt={log.alt ?? log.identifier}
+          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+        />
+      </div>
+    );
+  }
+
+  if (log.contentType === "VIDEO") {
+    return (
+      <div style={historyMediaFrameStyle}>
+        <video
+          src={log.sourceUrl}
+          preload="metadata"
+          controls
+          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <a href={log.sourceUrl} target="_blank" rel="noreferrer">
+      <Box
+        padding="300"
+        background="bg-surface-secondary"
+        borderRadius="200"
+      >
+        <Text as="span" variant="bodySm">
+          Open file
+        </Text>
+      </Box>
+    </a>
+  );
+}
+
+function filenameFromUrl(url: string) {
+  try {
+    const pathname = new URL(url).pathname;
+    return pathname.split("/").filter(Boolean).pop() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function getTargetFilePreviewMap(admin: any) {
+  const previewMap = new Map<string, HistoryTargetFile>();
+  let hasNextPage = true;
+  let cursor: string | null = null;
+
+  while (hasNextPage) {
+    const data: {
+      files: {
+        edges: Array<{
+          node: {
+            __typename: string;
+            alt: string | null;
+            image?: { url: string | null } | null;
+            url?: string | null;
+            sources?: Array<{ url: string | null } | null> | null;
+          };
+        }>;
+        pageInfo: {
+          hasNextPage: boolean;
+          endCursor: string | null;
+        };
+      };
+    } = await targetAdminGraphql<
+      {
+        files: {
+          edges: Array<{
+            node: {
+              __typename: string;
+              alt: string | null;
+              image?: { url: string | null } | null;
+              url?: string | null;
+              sources?: Array<{ url: string | null } | null> | null;
+            };
+          }>;
+          pageInfo: {
+            hasNextPage: boolean;
+            endCursor: string | null;
+          };
+        };
+      },
+      { after?: string | null }
+    >(
+      admin,
+      `#graphql
+        query HistoryTargetFiles($after: String) {
+          files(first: 100, after: $after) {
+            edges {
+              node {
+                __typename
+                alt
+                ... on MediaImage {
+                  image {
+                    url
+                  }
+                }
+                ... on GenericFile {
+                  url
+                }
+                ... on Video {
+                  sources {
+                    url
+                  }
+                }
+              }
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
+        }
+      `,
+      { after: cursor },
+    );
+
+    for (const edge of data.files.edges) {
+      const node = edge.node;
+      const sourceUrl =
+        node.__typename === "MediaImage"
+          ? node.image?.url ?? null
+          : node.__typename === "GenericFile"
+            ? node.url ?? null
+            : node.sources?.[0]?.url ?? null;
+
+      if (!sourceUrl) {
+        continue;
+      }
+
+      const identifier = filenameFromUrl(sourceUrl);
+
+      if (!identifier) {
+        continue;
+      }
+
+      previewMap.set(identifier, {
+        contentType:
+          node.__typename === "MediaImage"
+            ? "IMAGE"
+            : node.__typename === "Video"
+              ? "VIDEO"
+              : "FILE",
+        sourceUrl,
+        alt: node.alt,
+      });
+    }
+
+    hasNextPage = data.files.pageInfo.hasNextPage;
+    cursor = data.files.pageInfo.endCursor;
+  }
+
+  return previewMap;
+}
+
 export async function loader({ request }: LoaderFunctionArgs) {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const url = new URL(request.url);
   const tab = isHistoryTab(url.searchParams.get("tab"))
     ? (url.searchParams.get("tab") as HistoryTab)
@@ -126,6 +336,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
       JOBS_PER_PAGE,
     );
     const expandedLogs = jobId ? await getFileSyncLogs(jobId) : [];
+    const previewMap =
+      expandedLogs.some((log) => !log.sourceUrl) && expandedLogs.length > 0
+        ? await getTargetFilePreviewMap(admin)
+        : new Map<string, HistoryTargetFile>();
 
     return {
       tab,
@@ -137,10 +351,17 @@ export async function loader({ request }: LoaderFunctionArgs) {
         ...job,
         createdAt: job.createdAt.toISOString(),
       })),
-      fileLogs: expandedLogs.map((log: any) => ({
-        ...log,
-        createdAt: log.createdAt.toISOString(),
-      })),
+      fileLogs: expandedLogs.map((log: any) => {
+        const preview = !log.sourceUrl ? previewMap.get(log.identifier) : null;
+
+        return {
+          ...log,
+          contentType: log.contentType ?? preview?.contentType ?? null,
+          sourceUrl: log.sourceUrl ?? preview?.sourceUrl ?? null,
+          alt: log.alt ?? preview?.alt ?? null,
+          createdAt: log.createdAt.toISOString(),
+        };
+      }),
       definitionJobs: [],
       definitionLogs: [],
       connectionEvents: [],
@@ -413,15 +634,114 @@ export default function HistoryPage() {
                           <Text as="h3" variant="headingSm">
                             File sync log
                           </Text>
-                          <KeyValueTable
-                            headings={["Status", "Identifier", "Message", "Date & Time"]}
-                            rows={paginatedFileLogs.map((log) => [
-                              <StatusBadge key={`${log.id}-status`} status={log.status} />,
-                              log.identifier,
-                              log.message,
-                              new Date(log.createdAt).toLocaleString(),
-                            ])}
-                          />
+                          <div
+                            style={{
+                              border: "1px solid var(--p-color-border-secondary)",
+                              borderRadius: 12,
+                              overflow: "hidden",
+                            }}
+                          >
+                            <table
+                              style={{
+                                width: "100%",
+                                borderCollapse: "collapse",
+                                tableLayout: "fixed",
+                              }}
+                            >
+                              <thead>
+                                <tr
+                                  style={{
+                                    background:
+                                      "var(--p-color-bg-surface-secondary)",
+                                  }}
+                                >
+                                  <th style={{ padding: "12px 16px", textAlign: "left", width: 110 }}>
+                                    Status
+                                  </th>
+                                  <th style={{ padding: "12px 16px", textAlign: "left", width: 180 }}>
+                                    Preview
+                                  </th>
+                                  <th style={{ padding: "12px 16px", textAlign: "left", width: 240 }}>
+                                    Identifier
+                                  </th>
+                                  <th style={{ padding: "12px 16px", textAlign: "left" }}>
+                                    Message
+                                  </th>
+                                  <th style={{ padding: "12px 16px", textAlign: "left", width: 180 }}>
+                                    Date & Time
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {paginatedFileLogs.map((log, index) => (
+                                  <tr key={log.id}>
+                                    <td
+                                      style={{
+                                        padding: "12px 16px",
+                                        verticalAlign: "top",
+                                        borderBottom:
+                                          index === paginatedFileLogs.length - 1
+                                            ? "none"
+                                            : "1px solid var(--p-color-border-secondary)",
+                                      }}
+                                    >
+                                      <StatusBadge status={log.status} />
+                                    </td>
+                                    <td
+                                      style={{
+                                        padding: "12px 16px",
+                                        verticalAlign: "top",
+                                        borderBottom:
+                                          index === paginatedFileLogs.length - 1
+                                            ? "none"
+                                            : "1px solid var(--p-color-border-secondary)",
+                                      }}
+                                    >
+                                      <FileHistoryPreview log={log} />
+                                    </td>
+                                    <td
+                                      style={{
+                                        padding: "12px 16px",
+                                        verticalAlign: "top",
+                                        borderBottom:
+                                          index === paginatedFileLogs.length - 1
+                                            ? "none"
+                                            : "1px solid var(--p-color-border-secondary)",
+                                        overflowWrap: "anywhere",
+                                      }}
+                                    >
+                                      {log.identifier}
+                                    </td>
+                                    <td
+                                      style={{
+                                        padding: "12px 16px",
+                                        verticalAlign: "top",
+                                        borderBottom:
+                                          index === paginatedFileLogs.length - 1
+                                            ? "none"
+                                            : "1px solid var(--p-color-border-secondary)",
+                                        overflowWrap: "anywhere",
+                                      }}
+                                    >
+                                      {log.message}
+                                    </td>
+                                    <td
+                                      style={{
+                                        padding: "12px 16px",
+                                        verticalAlign: "top",
+                                        borderBottom:
+                                          index === paginatedFileLogs.length - 1
+                                            ? "none"
+                                            : "1px solid var(--p-color-border-secondary)",
+                                      }}
+                                    >
+                                      {new Date(log.createdAt).toLocaleString()}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
                           {totalFileLogPages > 1 ? (
                             <InlineStack align="space-between" blockAlign="center">
                               <Text as="span" variant="bodySm" tone="subdued">

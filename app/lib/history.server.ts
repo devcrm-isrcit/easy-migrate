@@ -35,6 +35,9 @@ export async function createFileSyncLog(input: {
   jobId: string;
   status: string;
   identifier: string;
+  contentType?: string | null;
+  sourceUrl?: string | null;
+  alt?: string | null;
   message: string;
 }) {
   return prisma.fileSyncLog.create({
