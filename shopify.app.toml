@@ -2,7 +2,7 @@
 
 client_id = "590c63b95c2f9d614101d3bd0ce4f071"
 name = "migration-app"
-application_url = "https://example.com"
+application_url = "https://easy-migrate.onrender.com"
 embedded = true
 
 [access_scopes]
@@ -21,8 +21,7 @@ api_version = "2026-07"
   topics = [ "app/scopes_update" ]
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://easy-migrate.onrender.com/api/auth" ]
 
 [build]
-include_config_on_deploy = true
 automatically_update_urls_on_dev = true

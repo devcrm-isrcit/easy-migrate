@@ -27,12 +27,16 @@ import {
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
-import prisma from "../db.server";
 import {
   StatusBadge,
   SummaryTable,
 } from "../components/definition-sync";
 import { fetchFileMigrationPreview, runFileMigration } from "../lib/file-sync.server";
+import {
+  clearStoredSourceCredential,
+  readStoredSourceCredential,
+  writeStoredSourceCredential,
+} from "../lib/source-credentials.client";
 import { authenticate } from "../shopify.server";
 
 interface PreviewFile {
@@ -77,43 +81,50 @@ function getFileFilterType(file: PreviewFile): Exclude<FileFilter, "all"> {
 }
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const { admin, session } = await authenticate.admin(request);
-
-  const credential = await prisma.sourceStoreCredential.findUnique({
-    where: { targetShop: session.shop },
-  });
-
-  let preview: Awaited<ReturnType<typeof fetchFileMigrationPreview>> | null = null;
-  let previewError: string | null = null;
-
-  if (credential?.tokenStatus === "valid") {
-    try {
-      preview = await fetchFileMigrationPreview({
-        targetShop: session.shop,
-        admin,
-      });
-    } catch (error) {
-      previewError =
-        error instanceof Error ? error.message : "Failed to load file preview.";
-    }
-  }
+  const { session } = await authenticate.admin(request);
 
   return {
-    credential: credential
-      ? {
-          sourceShop: credential.sourceShop,
-          tokenStatus: credential.tokenStatus,
-        }
-      : null,
-    preview,
-    previewError,
+    targetShop: session.shop,
   };
 }
 
 export async function action({ request }: ActionFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
-  const intent = String(formData.get("intent") || "migrate");
+  const intent = String(formData.get("intent") || "preview");
+  const sourceShop = String(formData.get("sourceShop") || "").trim();
+  const sourceToken = String(formData.get("sourceToken") || "").trim();
+
+  if (!sourceShop || !sourceToken) {
+    return {
+      ok: false,
+      error: "Enter a source store domain and token first.",
+    };
+  }
+
+  if (intent === "preview") {
+    try {
+      const preview = await fetchFileMigrationPreview({
+        sourceShop,
+        sourceToken,
+        targetShop: session.shop,
+        admin,
+      });
+
+      return {
+        ok: true,
+        intent,
+        preview,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        intent,
+        error:
+          error instanceof Error ? error.message : "Failed to load file preview.",
+      };
+    }
+  }
 
   if (intent !== "migrate") {
     return { ok: false, error: "Unsupported action." };
@@ -132,6 +143,8 @@ export async function action({ request }: ActionFunctionArgs) {
 
   try {
     const result = await runFileMigration({
+      sourceShop,
+      sourceToken,
       targetShop: session.shop,
       admin,
       selectedFileIds,
@@ -200,11 +213,35 @@ function MediaPreview({ file }: { file: PreviewFile }) {
 }
 
 export default function FileMigrationPage() {
-  const { credential, preview, previewError } = useLoaderData<typeof loader>();
+  const { targetShop } = useLoaderData<typeof loader>();
+  const previewFetcher = useFetcher<typeof action>();
   const migrationFetcher = useFetcher<typeof action>();
+  const [preview, setPreview] = useState<{
+    sourceShop: string;
+    totalSourceFiles: number;
+    transferableFiles: number;
+    skippedExistingFiles: number;
+    files: PreviewFile[];
+  } | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const previewData = previewFetcher.data as
+    | {
+        ok: boolean;
+        intent?: string;
+        preview?: {
+          sourceShop: string;
+          totalSourceFiles: number;
+          transferableFiles: number;
+          skippedExistingFiles: number;
+          files: PreviewFile[];
+        };
+        error?: string;
+      }
+    | undefined;
   const migrationData = migrationFetcher.data as
     | {
         ok: boolean;
+        intent?: string;
         message?: string;
         error?: string;
         result?: {
@@ -221,12 +258,14 @@ export default function FileMigrationPage() {
         };
       }
     | undefined;
-
   const files = preview?.files ?? [];
+  const [sourceShop, setSourceShop] = useState("");
+  const [sourceToken, setSourceToken] = useState("");
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
   const [activeFilter, setActiveFilter] = useState<FileFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
+  const isLoadingPreview = previewFetcher.state !== "idle";
   const isMigrating = migrationFetcher.state !== "idle";
   const logs = migrationData?.result?.logs ?? [];
   const normalizedQuery = searchQuery.trim().toLowerCase();
@@ -261,6 +300,38 @@ export default function FileMigrationPage() {
   const transferableCount = files.filter((file) => !file.alreadyInTarget).length;
 
   useEffect(() => {
+    const storedCredential = readStoredSourceCredential(targetShop);
+
+    if (!storedCredential) {
+      return;
+    }
+
+    setSourceShop(storedCredential.sourceShop);
+    setSourceToken(storedCredential.sourceToken);
+
+    const formData = new FormData();
+    formData.set("intent", "preview");
+    formData.set("sourceShop", storedCredential.sourceShop);
+    formData.set("sourceToken", storedCredential.sourceToken);
+    previewFetcher.submit(formData, { method: "post" });
+  }, [targetShop]);
+
+  useEffect(() => {
+    if (!previewData) {
+      return;
+    }
+
+    if (previewData.ok && previewData.preview) {
+      setPreview(previewData.preview);
+      setPreviewError(null);
+      return;
+    }
+
+    setPreview(null);
+    setPreviewError(previewData.error ?? "Failed to load file preview.");
+  }, [previewData]);
+
+  useEffect(() => {
     setSelectedFileIds([]);
   }, [preview?.sourceShop, files.length]);
 
@@ -274,9 +345,31 @@ export default function FileMigrationPage() {
     }
   }, [currentPage, totalPages]);
 
+  useEffect(() => {
+    if (!previewData?.ok || !preview?.sourceShop || !sourceToken) {
+      return;
+    }
+
+    writeStoredSourceCredential(targetShop, {
+      sourceShop: preview.sourceShop,
+      sourceToken,
+    });
+    setSourceShop(preview.sourceShop);
+  }, [preview?.sourceShop, previewData?.ok, sourceToken, targetShop]);
+
+  function handleLoadPreview() {
+    const formData = new FormData();
+    formData.set("intent", "preview");
+    formData.set("sourceShop", sourceShop);
+    formData.set("sourceToken", sourceToken);
+    previewFetcher.submit(formData, { method: "post" });
+  }
+
   function handleMigrate() {
     const formData = new FormData();
     formData.set("intent", "migrate");
+    formData.set("sourceShop", sourceShop);
+    formData.set("sourceToken", sourceToken);
     formData.set("selectedFileIds", JSON.stringify(selectedFileIds));
     migrationFetcher.submit(formData, { method: "post" });
   }
@@ -315,17 +408,51 @@ export default function FileMigrationPage() {
       <Layout>
         <Layout.Section>
           <BlockStack gap="400">
-            {!credential ? (
-              <Banner tone="warning">
-                <p>Connect a source store on the dashboard before migrating files.</p>
-              </Banner>
-            ) : null}
-
-            {credential && credential.tokenStatus !== "valid" ? (
-              <Banner tone="critical">
-                <p>Validate the source store token on the dashboard before migrating files.</p>
-              </Banner>
-            ) : null}
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingMd">
+                  Source credentials
+                </Text>
+                <Text as="p" tone="subdued">
+                  These credentials are kept only in this browser session.
+                </Text>
+                <TextField
+                  label="Source store domain"
+                  value={sourceShop}
+                  onChange={setSourceShop}
+                  autoComplete="off"
+                  placeholder="source-store.myshopify.com"
+                />
+                <TextField
+                  label="Admin API access token"
+                  value={sourceToken}
+                  onChange={setSourceToken}
+                  autoComplete="off"
+                  type="password"
+                />
+                <InlineStack gap="200">
+                  <Button
+                    variant="primary"
+                    onClick={handleLoadPreview}
+                    loading={isLoadingPreview}
+                  >
+                    {preview ? "Refresh preview" : "Load preview"}
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      clearStoredSourceCredential(targetShop);
+                      setSourceShop("");
+                      setSourceToken("");
+                      setSelectedFileIds([]);
+                      setPreview(null);
+                      setPreviewError(null);
+                    }}
+                  >
+                    Clear session
+                  </Button>
+                </InlineStack>
+              </BlockStack>
+            </Card>
 
             {previewError ? (
               <Banner tone="critical">

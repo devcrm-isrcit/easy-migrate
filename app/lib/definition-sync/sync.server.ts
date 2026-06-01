@@ -1,10 +1,8 @@
-import prisma from "../../db.server";
 import {
   compareMetafieldDefinitions,
   compareMetaobjectDefinitions,
 } from "./compare.server";
 import { syncMetaobjectContent } from "./content-sync.server";
-import { decryptToken } from "./encryption.server";
 import {
   createSyncJob,
   createSyncLog,
@@ -665,29 +663,25 @@ export async function buildDefinitionScanPreview({
 }
 
 export async function runDefinitionSync({
+  sourceShop,
+  sourceToken,
   targetShop,
   admin,
   selectedMetaobjectTypes,
   selectedMetafieldKeys,
   copyContent = false,
 }: {
+  sourceShop: string;
+  sourceToken: string;
   targetShop: string;
   admin: NonNullable<AdminGraphqlClient>;
   selectedMetaobjectTypes?: string[];
   selectedMetafieldKeys?: string[];
   copyContent?: boolean;
 }) {
-  const credential = await prisma.sourceStoreCredential.findUnique({
-    where: { targetShop },
-  });
-
-  if (!credential) {
-    throw new Error("Connect a source store before running a sync.");
-  }
-
   const preview = await buildDefinitionScanPreview({
-    sourceShop: credential.sourceShop,
-    sourceToken: decryptToken(credential.encryptedToken),
+    sourceShop,
+    sourceToken,
     targetShop,
     admin,
   });
@@ -771,7 +765,7 @@ export async function runDefinitionSync({
   };
 
   const job = await createSyncJob({
-    sourceShop: credential.sourceShop,
+    sourceShop,
     targetShop,
     status: "syncing",
   });
@@ -958,8 +952,8 @@ export async function runDefinitionSync({
         );
 
         const contentResult = await syncMetaobjectContent({
-          sourceShop: credential.sourceShop,
-          sourceToken: decryptToken(credential.encryptedToken),
+          sourceShop,
+          sourceToken,
           admin,
           jobId: job.id,
           metaobjectTypes: allMetaobjectTypes,

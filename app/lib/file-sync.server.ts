@@ -1,5 +1,3 @@
-import prisma from "../db.server";
-import { decryptToken } from "./definition-sync/encryption.server";
 import { sourceAdminGraphql } from "./definition-sync/source-admin.server";
 import { assertNoUserErrors, targetAdminGraphql } from "./definition-sync/target-admin.server";
 
@@ -243,23 +241,19 @@ async function createTargetFile(
 }
 
 export async function fetchFileMigrationPreview({
+  sourceShop,
+  sourceToken,
   targetShop,
   admin,
 }: {
+  sourceShop: string;
+  sourceToken: string;
   targetShop: string;
   admin: AdminGraphqlClient;
 }) {
-  const credential = await prisma.sourceStoreCredential.findUnique({
-    where: { targetShop },
-  });
-
-  if (!credential) {
-    throw new Error("Connect a source store before migrating files.");
-  }
-
   const source = {
-    shop: credential.sourceShop,
-    token: decryptToken(credential.encryptedToken),
+    shop: sourceShop,
+    token: sourceToken,
   };
 
   const [sourceFiles, targetSignatures] = await Promise.all([
@@ -280,7 +274,7 @@ export async function fetchFileMigrationPreview({
   });
 
   return {
-    sourceShop: credential.sourceShop,
+    sourceShop,
     totalSourceFiles: sourceFiles.length,
     transferableFiles: transferableFiles.length,
     skippedExistingFiles: sourceFiles.length - transferableFiles.length,
@@ -289,25 +283,21 @@ export async function fetchFileMigrationPreview({
 }
 
 export async function runFileMigration({
+  sourceShop,
+  sourceToken,
   targetShop,
   admin,
   selectedFileIds,
 }: {
+  sourceShop: string;
+  sourceToken: string;
   targetShop: string;
   admin: AdminGraphqlClient;
   selectedFileIds?: string[];
 }) {
-  const credential = await prisma.sourceStoreCredential.findUnique({
-    where: { targetShop },
-  });
-
-  if (!credential) {
-    throw new Error("Connect a source store before migrating files.");
-  }
-
   const source = {
-    shop: credential.sourceShop,
-    token: decryptToken(credential.encryptedToken),
+    shop: sourceShop,
+    token: sourceToken,
   };
 
   const [sourceFiles, targetSignatures] = await Promise.all([
@@ -369,7 +359,7 @@ export async function runFileMigration({
   }
 
   return {
-    sourceShop: credential.sourceShop,
+    sourceShop,
     totalSourceFiles: candidateFiles.length,
     createdCount,
     skippedCount,

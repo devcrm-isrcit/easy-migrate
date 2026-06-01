@@ -22,17 +22,12 @@ import {
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
-import prisma from "../db.server";
 import {
   KeyValueTable,
   StatusBadge,
   SummaryTable,
   WarningsBanner,
 } from "../components/definition-sync";
-import {
-  decryptToken,
-  encryptToken,
-} from "../lib/definition-sync/encryption.server";
 import {
   getLatestSyncJob,
   getSyncLogs,
@@ -46,6 +41,11 @@ import {
   normalizeShopDomain,
   validateShopDomain,
 } from "../lib/definition-sync/shop-domain.server";
+import {
+  clearStoredSourceCredential,
+  readStoredSourceCredential,
+  writeStoredSourceCredential,
+} from "../lib/source-credentials.client";
 import { authenticate } from "../shopify.server";
 
 const stickyActionBarStyle: CSSProperties = {
@@ -63,10 +63,7 @@ const selectableRowStyle: CSSProperties = {
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
 
-  const [credential, latestJob, shopResponse] = await Promise.all([
-    prisma.sourceStoreCredential.findUnique({
-      where: { targetShop: session.shop },
-    }),
+  const [latestJob, shopResponse] = await Promise.all([
     getLatestSyncJob(session.shop),
     admin.graphql(`#graphql
       query DashboardShop {
@@ -80,13 +77,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   return {
     shop: shopPayload.data.shop,
-    credential: credential
-      ? {
-          sourceShop: credential.sourceShop,
-          tokenStatus: credential.tokenStatus,
-          lastValidatedAt: credential.lastValidatedAt?.toISOString() ?? null,
-        }
-      : null,
     latestJob: latestJob
       ? {
           id: latestJob.id,
@@ -118,49 +108,23 @@ export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "save");
 
-  if (intent === "remove") {
-    await prisma.sourceStoreCredential.deleteMany({
-      where: { targetShop: session.shop },
-    });
-    return { ok: true, intent, message: "Source credentials removed." };
-  }
-
-  if (intent === "reset") {
-    const jobs = await prisma.definitionSyncJob.findMany({
-      where: { targetShop: session.shop },
-      select: { id: true },
-    });
-    if (jobs.length) {
-      await prisma.definitionSyncLog.deleteMany({
-        where: { jobId: { in: jobs.map((j) => j.id) } },
-      });
-      await prisma.definitionSyncJob.deleteMany({
-        where: { targetShop: session.shop },
-      });
-    }
-    await prisma.sourceStoreCredential.deleteMany({
-      where: { targetShop: session.shop },
-    });
-    return { ok: true, intent, message: "App reset to fresh state." };
-  }
+  const sourceShopInput = String(formData.get("sourceShop") || "");
+  const token = String(formData.get("sourceToken") || "");
+  const normalizedShop = normalizeShopDomain(sourceShopInput);
 
   if (intent === "scan") {
-    const credential = await prisma.sourceStoreCredential.findUnique({
-      where: { targetShop: session.shop },
-    });
-
-    if (!credential || credential.tokenStatus !== "valid") {
+    if (!normalizedShop || !token.trim()) {
       return {
         ok: false,
         intent,
-        error: "Connect a valid source store first.",
+        error: "Enter a source store domain and token first.",
       };
     }
 
     try {
       const preview = await buildDefinitionScanPreview({
-        sourceShop: credential.sourceShop,
-        sourceToken: decryptToken(credential.encryptedToken),
+        sourceShop: normalizedShop,
+        sourceToken: token,
         targetShop: session.shop,
         admin,
       });
@@ -178,6 +142,14 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   if (intent === "sync") {
+    if (!normalizedShop || !token.trim()) {
+      return {
+        ok: false,
+        intent,
+        error: "Enter a source store domain and token first.",
+      };
+    }
+
     const selectedMetaobjectTypes = JSON.parse(
       String(formData.get("selectedMetaobjectTypes") || "[]"),
     ) as string[];
@@ -197,6 +169,8 @@ export async function action({ request }: ActionFunctionArgs) {
 
     try {
       const result = await runDefinitionSync({
+        sourceShop: normalizedShop,
+        sourceToken: token,
         targetShop: session.shop,
         admin,
         selectedMetaobjectTypes,
@@ -218,9 +192,6 @@ export async function action({ request }: ActionFunctionArgs) {
     }
   }
 
-  const sourceShopInput = String(formData.get("sourceShop") || "");
-  const token = String(formData.get("sourceToken") || "");
-  const normalizedShop = normalizeShopDomain(sourceShopInput);
   const domainError = validateShopDomain(sourceShopInput);
 
   if (domainError) {
@@ -244,46 +215,14 @@ export async function action({ request }: ActionFunctionArgs) {
   try {
     const validation = await validateSourceToken(normalizedShop, token);
 
-    await prisma.sourceStoreCredential.upsert({
-      where: { targetShop: session.shop },
-      update: {
-        sourceShop: validation.sourceShop,
-        encryptedToken: encryptToken(token),
-        tokenStatus: "valid",
-        lastValidatedAt: new Date(),
-      },
-      create: {
-        targetShop: session.shop,
-        sourceShop: validation.sourceShop,
-        encryptedToken: encryptToken(token),
-        tokenStatus: "valid",
-        lastValidatedAt: new Date(),
-      },
-    });
-
     return {
       ok: true,
       intent,
       message: `Connected to ${validation.shopName} (${validation.sourceShop}).`,
+      sourceShop: validation.sourceShop,
+      tokenStatus: "valid",
     };
   } catch (error) {
-    await prisma.sourceStoreCredential.upsert({
-      where: { targetShop: session.shop },
-      update: {
-        sourceShop: normalizedShop,
-        encryptedToken: encryptToken(token),
-        tokenStatus: "invalid",
-        lastValidatedAt: new Date(),
-      },
-      create: {
-        targetShop: session.shop,
-        sourceShop: normalizedShop,
-        encryptedToken: encryptToken(token),
-        tokenStatus: "invalid",
-        lastValidatedAt: new Date(),
-      },
-    });
-
     return {
       ok: false,
       intent,
@@ -344,16 +283,15 @@ interface ScanPreview {
 }
 
 export default function DefinitionSyncDashboard() {
-  const { shop, credential, latestJob, latestLogs } =
-    useLoaderData<typeof loader>();
+  const { shop, latestJob, latestLogs } = useLoaderData<typeof loader>();
 
   const connectionFetcher = useFetcher<typeof action>();
   const scanFetcher = useFetcher<typeof action>();
   const syncFetcher = useFetcher<typeof action>();
-  const resetFetcher = useFetcher<typeof action>();
 
-  const [sourceShop, setSourceShop] = useState(credential?.sourceShop ?? "");
+  const [sourceShop, setSourceShop] = useState("");
   const [sourceToken, setSourceToken] = useState("");
+  const [tokenStatus, setTokenStatus] = useState("unchecked");
   const [selectedMetaobjectTypes, setSelectedMetaobjectTypes] = useState<
     string[]
   >([]);
@@ -362,7 +300,7 @@ export default function DefinitionSyncDashboard() {
   );
   const [copyContent, setCopyContent] = useState(false);
   const [logsPage, setLogsPage] = useState(1);
-  const [showConnectionForm, setShowConnectionForm] = useState(!credential);
+  const [showConnectionForm, setShowConnectionForm] = useState(true);
 
   const isSaving = connectionFetcher.state !== "idle";
   const isScanning = scanFetcher.state !== "idle";
@@ -393,9 +331,24 @@ export default function DefinitionSyncDashboard() {
         intent: string;
         message?: string;
         error?: string;
+        sourceShop?: string;
+        tokenStatus?: string;
         fieldErrors?: { sourceShop?: string; sourceToken?: string };
       }
     | undefined;
+
+  useEffect(() => {
+    const storedCredential = readStoredSourceCredential(shop.myshopifyDomain);
+
+    if (!storedCredential) {
+      return;
+    }
+
+    setSourceShop(storedCredential.sourceShop);
+    setSourceToken(storedCredential.sourceToken);
+    setTokenStatus("unchecked");
+    setShowConnectionForm(false);
+  }, [shop.myshopifyDomain]);
 
   useEffect(() => {
     setSelectedMetaobjectTypes([]);
@@ -407,27 +360,23 @@ export default function DefinitionSyncDashboard() {
   }, [latestJob?.id]);
 
   useEffect(() => {
-    if (connectionData?.ok && connectionData.intent === "remove") {
-      setShowConnectionForm(true);
+    if (!connectionData || connectionData.intent !== "save") {
+      return;
     }
-  }, [connectionData]);
 
-  const resetData = resetFetcher.data as
-    | { ok: boolean; intent: string; message?: string }
-    | undefined;
-
-  useEffect(() => {
-    if (resetData?.ok && resetData.intent === "reset") {
-      setSourceShop("");
-      setSourceToken("");
-      setSelectedMetaobjectTypes([]);
-      setSelectedMetafieldKeys([]);
-      setCopyContent(false);
-      setShowConnectionForm(true);
-      setLogsPage(1);
-      window.location.reload();
+    if (!connectionData.ok || !connectionData.sourceShop) {
+      setTokenStatus("invalid");
+      return;
     }
-  }, [resetData]);
+
+    setSourceShop(connectionData.sourceShop);
+    setTokenStatus(connectionData.tokenStatus ?? "valid");
+    writeStoredSourceCredential(shop.myshopifyDomain, {
+      sourceShop: connectionData.sourceShop,
+      sourceToken,
+    });
+    setShowConnectionForm(false);
+  }, [connectionData, shop.myshopifyDomain, sourceToken]);
 
   const missingMetaobjects = preview?.metaobjects.missing ?? [];
   const existingMetaobjects = preview?.metaobjects.existing ?? [];
@@ -491,16 +440,28 @@ export default function DefinitionSyncDashboard() {
   }
 
   function handleRemove() {
-    connectionFetcher.submit({ intent: "remove" }, { method: "post" });
+    clearStoredSourceCredential(shop.myshopifyDomain);
+    setSourceShop("");
+    setSourceToken("");
+    setTokenStatus("unchecked");
+    setSelectedMetaobjectTypes([]);
+    setSelectedMetafieldKeys([]);
+    setCopyContent(false);
+    setShowConnectionForm(true);
   }
 
   function handleScan() {
-    scanFetcher.submit({ intent: "scan" }, { method: "post" });
+    scanFetcher.submit(
+      { intent: "scan", sourceShop, sourceToken },
+      { method: "post" },
+    );
   }
 
   function handleSync() {
     const fd = new FormData();
     fd.set("intent", "sync");
+    fd.set("sourceShop", sourceShop);
+    fd.set("sourceToken", sourceToken);
     fd.set("selectedMetaobjectTypes", JSON.stringify(selectedMetaobjectTypes));
     fd.set("selectedMetafieldKeys", JSON.stringify(selectedMetafieldKeys));
     fd.set("copyContent", copyContent ? "true" : "false");
@@ -561,14 +522,14 @@ export default function DefinitionSyncDashboard() {
         >
           <Card>
             <BlockStack gap="400">
-              {credential && !showConnectionForm ? (
+              {sourceShop && sourceToken && !showConnectionForm ? (
                 <BlockStack gap="300">
                   <InlineStack gap="200" blockAlign="center" align="space-between">
                     <InlineStack gap="200" blockAlign="center">
                       <Text as="span" variant="bodyMd" fontWeight="semibold">
-                        {credential.sourceShop}
+                        {sourceShop}
                       </Text>
-                      <StatusBadge status={credential.tokenStatus} />
+                      <StatusBadge status={tokenStatus} />
                     </InlineStack>
                     <InlineStack gap="200">
                       <Button
@@ -580,19 +541,15 @@ export default function DefinitionSyncDashboard() {
                       <Button
                         size="slim"
                         tone="critical"
-                        loading={isSaving}
                         onClick={handleRemove}
                       >
-                        Disconnect
+                        Clear session
                       </Button>
                     </InlineStack>
                   </InlineStack>
-                  {credential.lastValidatedAt ? (
-                    <Text as="p" tone="subdued" variant="bodySm">
-                      Last validated:{" "}
-                      {new Date(credential.lastValidatedAt).toLocaleString()}
-                    </Text>
-                  ) : null}
+                  <Text as="p" tone="subdued" variant="bodySm">
+                    Source credentials are kept only in this browser session.
+                  </Text>
                 </BlockStack>
               ) : (
                 <BlockStack gap="300">
@@ -637,9 +594,9 @@ export default function DefinitionSyncDashboard() {
                       loading={isSaving}
                       onClick={handleSave}
                     >
-                      {credential ? "Update connection" : "Connect"}
+                      {sourceShop ? "Update connection" : "Connect"}
                     </Button>
-                    {credential ? (
+                    {sourceShop ? (
                       <Button onClick={() => setShowConnectionForm(false)}>
                         Cancel
                       </Button>
@@ -652,7 +609,7 @@ export default function DefinitionSyncDashboard() {
         </Layout.AnnotatedSection>
 
         {/* ── Scan & Sync Section ── */}
-        {credential?.tokenStatus === "valid" ? (
+        {sourceShop && sourceToken ? (
           <Layout.Section>
             <BlockStack gap="400">
               <Card>
@@ -977,12 +934,12 @@ export default function DefinitionSyncDashboard() {
               ) : null}
             </BlockStack>
           </Layout.Section>
-        ) : credential ? (
+        ) : sourceShop ? (
           <Layout.Section>
             <Banner tone="warning">
               <p>
-                The source store token is invalid. Update the connection above
-                with a working Admin API access token.
+                Connect a valid source store token above to scan definitions or
+                run a sync.
               </p>
             </Banner>
           </Layout.Section>
@@ -1094,30 +1051,6 @@ export default function DefinitionSyncDashboard() {
             </Card>
           </Layout.Section>
         ) : null}
-        <Layout.Section>
-          <Card>
-            <BlockStack gap="200">
-              <Text as="h3" variant="headingSm" tone="critical">
-                Reset app
-              </Text>
-              <Text as="p" variant="bodySm" tone="subdued">
-                Remove all credentials, sync history, and logs. This does not
-                undo changes already made in the target store.
-              </Text>
-              <InlineStack>
-                <Button
-                  tone="critical"
-                  onClick={() =>
-                    resetFetcher.submit({ intent: "reset" }, { method: "post" })
-                  }
-                  loading={resetFetcher.state !== "idle"}
-                >
-                  Reset to fresh state
-                </Button>
-              </InlineStack>
-            </BlockStack>
-          </Card>
-        </Layout.Section>
       </Layout>
     </Page>
   );

@@ -35,7 +35,6 @@ Server helpers:
 
 - `app/lib/definition-sync/source-admin.server.ts`
 - `app/lib/definition-sync/target-admin.server.ts`
-- `app/lib/definition-sync/encryption.server.ts`
 - `app/lib/definition-sync/metafield-definitions.server.ts`
 - `app/lib/definition-sync/metaobject-definitions.server.ts`
 - `app/lib/definition-sync/compare.server.ts`
@@ -57,11 +56,12 @@ Database:
 
 The app adds:
 
-- `SourceStoreCredential`
 - `DefinitionSyncJob`
 - `DefinitionSyncLog`
 
-These store the encrypted source token, validation status, sync job counters, and per-item logs.
+The current app runtime uses the sync job tables for counters and per-item logs.
+The older `SourceStoreCredential` table can remain in the database as legacy data,
+but source tokens are no longer read from or written to it.
 
 ## Environment variables
 
@@ -72,15 +72,6 @@ Required:
 - `SHOPIFY_APP_URL`
 - `SCOPES`
 - `DATABASE_URL` if you move off the default SQLite setup
-- `SOURCE_TOKEN_ENCRYPTION_KEY`
-
-Example encryption secret generation:
-
-```bash
-openssl rand -base64 32
-```
-
-Set `SOURCE_TOKEN_ENCRYPTION_KEY` to a long random secret and keep it stable across deploys or saved source tokens will no longer decrypt.
 
 ## Shopify app scopes
 
@@ -134,8 +125,7 @@ Examples:
 Important:
 
 - The token is used only server-side.
-- The token is encrypted before storage.
-- The token is never returned in loader data.
+- The token is kept only in browser session storage and is submitted with scan, sync, and file migration requests.
 - The token is never logged by the app code.
 
 ## Target store token usage
