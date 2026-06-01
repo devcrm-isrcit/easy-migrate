@@ -11,10 +11,13 @@ import {
   Link,
   Page,
   Select,
+  Spinner,
   Text,
   TextField,
 } from "@shopify/polaris";
+import { useAppBridge } from "@shopify/app-bridge-react";
 import {
+  useRef,
   useEffect,
   useState,
   type CSSProperties,
@@ -24,6 +27,7 @@ import {
 import {
   useFetcher,
   useLoaderData,
+  useNavigate,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
@@ -33,9 +37,7 @@ import {
 } from "../components/definition-sync";
 import { fetchFileMigrationPreview, runFileMigration } from "../lib/file-sync.server";
 import {
-  clearStoredSourceCredential,
   readStoredSourceCredential,
-  writeStoredSourceCredential,
 } from "../lib/source-credentials.client";
 import { authenticate } from "../shopify.server";
 
@@ -213,9 +215,12 @@ function MediaPreview({ file }: { file: PreviewFile }) {
 }
 
 export default function FileMigrationPage() {
+  const shopify = useAppBridge();
   const { targetShop } = useLoaderData<typeof loader>();
+  const navigate = useNavigate();
   const previewFetcher = useFetcher<typeof action>();
   const migrationFetcher = useFetcher<typeof action>();
+  const migrationResultRef = useRef<HTMLDivElement | null>(null);
   const [preview, setPreview] = useState<{
     sourceShop: string;
     totalSourceFiles: number;
@@ -265,6 +270,8 @@ export default function FileMigrationPage() {
   const [activeFilter, setActiveFilter] = useState<FileFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
+  const [hasStoredCredential, setHasStoredCredential] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
   const isLoadingPreview = previewFetcher.state !== "idle";
   const isMigrating = migrationFetcher.state !== "idle";
   const logs = migrationData?.result?.logs ?? [];
@@ -303,9 +310,12 @@ export default function FileMigrationPage() {
     const storedCredential = readStoredSourceCredential(targetShop);
 
     if (!storedCredential) {
+      setHasStoredCredential(false);
+      setIsInitializing(false);
       return;
     }
 
+    setHasStoredCredential(true);
     setSourceShop(storedCredential.sourceShop);
     setSourceToken(storedCredential.sourceToken);
 
@@ -324,12 +334,50 @@ export default function FileMigrationPage() {
     if (previewData.ok && previewData.preview) {
       setPreview(previewData.preview);
       setPreviewError(null);
+      setIsInitializing(false);
       return;
     }
 
     setPreview(null);
     setPreviewError(previewData.error ?? "Failed to load file preview.");
+    setIsInitializing(false);
   }, [previewData]);
+
+  useEffect(() => {
+    if (!previewError) {
+      return;
+    }
+
+    shopify.toast.show(previewError, { isError: true });
+  }, [previewError, shopify]);
+
+  useEffect(() => {
+    if (!migrationData) {
+      return;
+    }
+
+    if (migrationData.ok) {
+      shopify.toast.show(
+        migrationData.message ?? "File migration completed.",
+      );
+      return;
+    }
+
+    if (migrationData.error) {
+      shopify.toast.show(migrationData.error, { isError: true });
+    }
+  }, [migrationData, shopify]);
+
+  useEffect(() => {
+    if (!migrationData) {
+      return;
+    }
+
+    migrationResultRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }, [migrationData]);
 
   useEffect(() => {
     setSelectedFileIds([]);
@@ -344,26 +392,6 @@ export default function FileMigrationPage() {
       setCurrentPage(totalPages);
     }
   }, [currentPage, totalPages]);
-
-  useEffect(() => {
-    if (!previewData?.ok || !preview?.sourceShop || !sourceToken) {
-      return;
-    }
-
-    writeStoredSourceCredential(targetShop, {
-      sourceShop: preview.sourceShop,
-      sourceToken,
-    });
-    setSourceShop(preview.sourceShop);
-  }, [preview?.sourceShop, previewData?.ok, sourceToken, targetShop]);
-
-  function handleLoadPreview() {
-    const formData = new FormData();
-    formData.set("intent", "preview");
-    formData.set("sourceShop", sourceShop);
-    formData.set("sourceToken", sourceToken);
-    previewFetcher.submit(formData, { method: "post" });
-  }
 
   function handleMigrate() {
     const formData = new FormData();
@@ -402,57 +430,35 @@ export default function FileMigrationPage() {
     <Page
       title="Files Migration"
       subtitle="Copy selected files and media from the connected source store."
-      backAction={{ url: "/app" }}
+      backAction={{ onAction: () => navigate("/app") }}
       fullWidth
     >
       <Layout>
         <Layout.Section>
           <BlockStack gap="400">
-            <Card>
-              <BlockStack gap="300">
-                <Text as="h2" variant="headingMd">
-                  Source credentials
-                </Text>
-                <Text as="p" tone="subdued">
-                  These credentials are kept only in this browser session.
-                </Text>
-                <TextField
-                  label="Source store domain"
-                  value={sourceShop}
-                  onChange={setSourceShop}
-                  autoComplete="off"
-                  placeholder="source-store.myshopify.com"
-                />
-                <TextField
-                  label="Admin API access token"
-                  value={sourceToken}
-                  onChange={setSourceToken}
-                  autoComplete="off"
-                  type="password"
-                />
-                <InlineStack gap="200">
-                  <Button
-                    variant="primary"
-                    onClick={handleLoadPreview}
-                    loading={isLoadingPreview}
-                  >
-                    {preview ? "Refresh preview" : "Load preview"}
-                  </Button>
-                  <Button
-                    onClick={() => {
-                      clearStoredSourceCredential(targetShop);
-                      setSourceShop("");
-                      setSourceToken("");
-                      setSelectedFileIds([]);
-                      setPreview(null);
-                      setPreviewError(null);
-                    }}
-                  >
-                    Clear session
-                  </Button>
-                </InlineStack>
-              </BlockStack>
-            </Card>
+            {isInitializing ? (
+              <Card>
+                <BlockStack gap="300" inlineAlign="center">
+                  <Spinner accessibilityLabel="Verifying source connection" size="large" />
+                  <Text as="p" tone="subdued" alignment="center">
+                    Verifying the saved source connection and loading the
+                    migration preview.
+                  </Text>
+                </BlockStack>
+              </Card>
+            ) : null}
+
+            {!hasStoredCredential && !isLoadingPreview ? (
+              <Banner tone="warning">
+                <p>
+                  Connect the source store on the homepage first. Files
+                  Migration uses the same browser session credentials.
+                </p>
+                <p>
+                  <Button onClick={() => navigate("/app")}>Go to homepage</Button>
+                </p>
+              </Banner>
+            ) : null}
 
             {previewError ? (
               <Banner tone="critical">
@@ -460,7 +466,7 @@ export default function FileMigrationPage() {
               </Banner>
             ) : null}
 
-            {preview ? (
+            {preview && !isInitializing ? (
               <Card>
                 <BlockStack gap="400">
                   <InlineStack align="space-between" blockAlign="center">
@@ -672,7 +678,8 @@ export default function FileMigrationPage() {
             ) : null}
 
             {migrationData ? (
-              <Card>
+              <div ref={migrationResultRef}>
+                <Card>
                 <BlockStack gap="300">
                   <Text as="h2" variant="headingMd">
                     Migration result
@@ -730,7 +737,8 @@ export default function FileMigrationPage() {
                     </>
                   ) : null}
                 </BlockStack>
-              </Card>
+                </Card>
+              </div>
             ) : null}
           </BlockStack>
         </Layout.Section>

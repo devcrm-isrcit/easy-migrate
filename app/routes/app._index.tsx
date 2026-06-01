@@ -23,15 +23,14 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 import {
-  KeyValueTable,
   StatusBadge,
   SummaryTable,
   WarningsBanner,
 } from "../components/definition-sync";
 import {
   getLatestSyncJob,
-  getSyncLogs,
 } from "../lib/definition-sync/logger.server";
+import { createStoreConnectionHistory } from "../lib/history.server";
 import {
   buildDefinitionScanPreview,
   runDefinitionSync,
@@ -73,8 +72,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
   ]);
 
   const shopPayload = await shopResponse.json();
-  const logs = latestJob ? await getSyncLogs(latestJob.id) : [];
-
   return {
     shop: shopPayload.data.shop,
     latestJob: latestJob
@@ -96,10 +93,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
           errorMessage: latestJob.errorMessage,
         }
       : null,
-    latestLogs: logs.map((log) => ({
-      ...log,
-      createdAt: log.createdAt.toISOString(),
-    })),
   };
 }
 
@@ -192,6 +185,20 @@ export async function action({ request }: ActionFunctionArgs) {
     }
   }
 
+  if (intent === "clear_connection") {
+    await createStoreConnectionHistory({
+      targetShop: session.shop,
+      sourceShop: normalizedShop || null,
+      status: "cleared",
+      event: "session_cleared",
+      message: normalizedShop
+        ? `Cleared the saved browser session for ${normalizedShop}.`
+        : "Cleared the saved browser session for the source store connection.",
+    });
+
+    return { ok: true, intent, message: "Source session cleared." };
+  }
+
   const domainError = validateShopDomain(sourceShopInput);
 
   if (domainError) {
@@ -214,6 +221,13 @@ export async function action({ request }: ActionFunctionArgs) {
 
   try {
     const validation = await validateSourceToken(normalizedShop, token);
+    await createStoreConnectionHistory({
+      targetShop: session.shop,
+      sourceShop: validation.sourceShop,
+      status: "valid",
+      event: "connected",
+      message: `Validated source store connection for ${validation.sourceShop}.`,
+    });
 
     return {
       ok: true,
@@ -223,6 +237,17 @@ export async function action({ request }: ActionFunctionArgs) {
       tokenStatus: "valid",
     };
   } catch (error) {
+    await createStoreConnectionHistory({
+      targetShop: session.shop,
+      sourceShop: normalizedShop || null,
+      status: "invalid",
+      event: "validation_failed",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Failed to validate the source connection.",
+    });
+
     return {
       ok: false,
       intent,
@@ -283,7 +308,7 @@ interface ScanPreview {
 }
 
 export default function DefinitionSyncDashboard() {
-  const { shop, latestJob, latestLogs } = useLoaderData<typeof loader>();
+  const { shop, latestJob } = useLoaderData<typeof loader>();
 
   const connectionFetcher = useFetcher<typeof action>();
   const scanFetcher = useFetcher<typeof action>();
@@ -299,7 +324,6 @@ export default function DefinitionSyncDashboard() {
     [],
   );
   const [copyContent, setCopyContent] = useState(false);
-  const [logsPage, setLogsPage] = useState(1);
   const [showConnectionForm, setShowConnectionForm] = useState(true);
 
   const isSaving = connectionFetcher.state !== "idle";
@@ -356,11 +380,23 @@ export default function DefinitionSyncDashboard() {
   }, [preview]);
 
   useEffect(() => {
-    setLogsPage(1);
-  }, [latestJob?.id]);
+    if (!connectionData) {
+      return;
+    }
 
-  useEffect(() => {
-    if (!connectionData || connectionData.intent !== "save") {
+    if (connectionData.intent === "clear_connection" && connectionData.ok) {
+      clearStoredSourceCredential(shop.myshopifyDomain);
+      setSourceShop("");
+      setSourceToken("");
+      setTokenStatus("unchecked");
+      setSelectedMetaobjectTypes([]);
+      setSelectedMetafieldKeys([]);
+      setCopyContent(false);
+      setShowConnectionForm(true);
+      return;
+    }
+
+    if (connectionData.intent !== "save") {
       return;
     }
 
@@ -421,17 +457,6 @@ export default function DefinitionSyncDashboard() {
     }
   }
 
-  const typedLogs = latestLogs as Array<{
-    id: string;
-    itemType: string;
-    itemKey: string;
-    status: string;
-    message: string;
-    createdAt: string;
-  }>;
-  const paginatedLogs = typedLogs.slice((logsPage - 1) * 10, logsPage * 10);
-  const totalLogPages = Math.max(1, Math.ceil(typedLogs.length / 10));
-
   function handleSave() {
     connectionFetcher.submit(
       { intent: "save", sourceShop, sourceToken },
@@ -440,14 +465,10 @@ export default function DefinitionSyncDashboard() {
   }
 
   function handleRemove() {
-    clearStoredSourceCredential(shop.myshopifyDomain);
-    setSourceShop("");
-    setSourceToken("");
-    setTokenStatus("unchecked");
-    setSelectedMetaobjectTypes([]);
-    setSelectedMetafieldKeys([]);
-    setCopyContent(false);
-    setShowConnectionForm(true);
+    connectionFetcher.submit(
+      { intent: "clear_connection", sourceShop },
+      { method: "post" },
+    );
   }
 
   function handleScan() {
@@ -492,21 +513,6 @@ export default function DefinitionSyncDashboard() {
         ),
       );
     }
-  }
-
-  function displayItemType(itemType: string) {
-    if (itemType === "metafield_definition") return "Metafield";
-    if (itemType === "metaobject_entry") return "Entry";
-    return "Metaobject";
-  }
-
-  function displayIdentifier(log: (typeof typedLogs)[number]) {
-    if (log.itemKey === "scope-warning") return "Warning";
-    if (log.itemType === "metafield_definition")
-      return metafieldNameByIdentifier.get(log.itemKey) ?? log.itemKey;
-    if (log.itemType === "metaobject_field")
-      return metaobjectFieldNameByIdentifier.get(log.itemKey) ?? log.itemKey;
-    return metaobjectNameByType.get(log.itemKey) ?? log.itemKey;
   }
 
   return (
@@ -996,57 +1002,6 @@ export default function DefinitionSyncDashboard() {
                     ["Failures", latestJob.failedCount],
                   ]}
                 />
-
-                {typedLogs.length > 0 ? (
-                  <>
-                    <Divider />
-                    <Text as="h3" variant="headingSm">
-                      Sync log
-                    </Text>
-                    <KeyValueTable
-                      headings={["Status", "Item", "Identifier", "Message", "Date & Time"]}
-                      rows={paginatedLogs.map((log) => [
-                        <StatusBadge
-                          key={`${log.id}-status`}
-                          status={log.status}
-                        />,
-                        displayItemType(log.itemType),
-                        displayIdentifier(log),
-                        log.message,
-                        new Date(log.createdAt).toLocaleString(),
-                      ])}
-                    />
-                    {totalLogPages > 1 ? (
-                      <InlineStack align="space-between" blockAlign="center">
-                        <Text as="span" tone="subdued" variant="bodySm">
-                          Page {logsPage} of {totalLogPages}
-                        </Text>
-                        <InlineStack gap="200">
-                          <Button
-                            size="slim"
-                            onClick={() =>
-                              setLogsPage((p) => Math.max(1, p - 1))
-                            }
-                            disabled={logsPage === 1}
-                          >
-                            Previous
-                          </Button>
-                          <Button
-                            size="slim"
-                            onClick={() =>
-                              setLogsPage((p) =>
-                                Math.min(totalLogPages, p + 1),
-                              )
-                            }
-                            disabled={logsPage === totalLogPages}
-                          >
-                            Next
-                          </Button>
-                        </InlineStack>
-                      </InlineStack>
-                    ) : null}
-                  </>
-                ) : null}
               </BlockStack>
             </Card>
           </Layout.Section>

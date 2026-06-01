@@ -8,7 +8,10 @@ function hasDefinitionSyncModels(client) {
   return Boolean(
     client?.sourceStoreCredential &&
       client?.definitionSyncJob &&
-      client?.definitionSyncLog,
+      client?.definitionSyncLog &&
+      client?.fileSyncJob &&
+      client?.fileSyncLog &&
+      client?.storeConnectionHistory,
   );
 }
 

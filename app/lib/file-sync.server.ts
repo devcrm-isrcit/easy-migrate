@@ -1,7 +1,13 @@
 import { sourceAdminGraphql } from "./definition-sync/source-admin.server";
+import {
+  createFileSyncJob,
+  createFileSyncLog,
+  updateFileSyncJob,
+} from "./history.server";
 import { assertNoUserErrors, targetAdminGraphql } from "./definition-sync/target-admin.server";
 
 type AdminGraphqlClient = Parameters<typeof targetAdminGraphql>[0];
+type UploadResource = "IMAGE" | "FILE" | "VIDEO";
 
 interface FileRecord {
   id: string;
@@ -31,6 +37,18 @@ interface FilesQueryResponse {
   };
 }
 
+interface DownloadedFile {
+  buffer: Buffer;
+  mimeType: string;
+  filename: string;
+}
+
+interface StagedUploadTarget {
+  url: string;
+  resourceUrl: string;
+  parameters: Array<{ name: string; value: string }>;
+}
+
 function filenameFromUrl(url: string) {
   try {
     const pathname = new URL(url).pathname;
@@ -38,6 +56,173 @@ function filenameFromUrl(url: string) {
     return lastSegment || null;
   } catch {
     return null;
+  }
+}
+
+function mimeTypeFromFilename(filename: string | null) {
+  const normalized = filename?.toLowerCase() ?? "";
+
+  if (normalized.endsWith(".svg")) return "image/svg+xml";
+  if (normalized.endsWith(".mp4")) return "video/mp4";
+  if (normalized.endsWith(".mov")) return "video/quicktime";
+  if (normalized.endsWith(".webm")) return "video/webm";
+  if (normalized.endsWith(".jpg") || normalized.endsWith(".jpeg")) return "image/jpeg";
+  if (normalized.endsWith(".png")) return "image/png";
+  if (normalized.endsWith(".gif")) return "image/gif";
+  if (normalized.endsWith(".pdf")) return "application/pdf";
+  if (normalized.endsWith(".txt")) return "text/plain";
+
+  return "application/octet-stream";
+}
+
+function normalizeMimeType(headerValue: string | null, filename: string | null) {
+  const headerMimeType = headerValue?.split(";")[0]?.trim();
+
+  if (headerMimeType) {
+    return headerMimeType;
+  }
+
+  return mimeTypeFromFilename(filename);
+}
+
+function getUploadResource(contentType: FileRecord["contentType"]): UploadResource {
+  if (contentType === "VIDEO") {
+    return "VIDEO";
+  }
+
+  if (contentType === "FILE") {
+    return "FILE";
+  }
+
+  return "IMAGE";
+}
+
+function getSafeFilename(file: FileRecord) {
+  return file.filename ?? `${file.id.replace(/[^a-zA-Z0-9_-]/g, "_")}.bin`;
+}
+
+async function downloadSourceFile(file: FileRecord): Promise<DownloadedFile> {
+  const response = await fetch(file.sourceUrl);
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to download source file: ${response.status} ${response.statusText}.`,
+    );
+  }
+
+  const filename = getSafeFilename(file);
+  const mimeType = normalizeMimeType(
+    response.headers.get("content-type"),
+    filename,
+  );
+  const arrayBuffer = await response.arrayBuffer();
+
+  return {
+    buffer: Buffer.from(arrayBuffer),
+    mimeType,
+    filename,
+  };
+}
+
+async function createStagedUploadTarget(
+  admin: AdminGraphqlClient,
+  file: FileRecord,
+  downloadedFile: DownloadedFile,
+) {
+  const resource = getUploadResource(file.contentType);
+  const data = await targetAdminGraphql<
+    {
+      stagedUploadsCreate: {
+        stagedTargets: StagedUploadTarget[];
+        userErrors: Array<{ field?: string[] | null; message: string }>;
+      };
+    },
+    {
+      input: Array<{
+        filename: string;
+        mimeType: string;
+        httpMethod: "POST";
+        resource: UploadResource;
+        fileSize?: string;
+      }>;
+    }
+  >(
+    admin,
+    `#graphql
+      mutation CreateStagedUpload($input: [StagedUploadInput!]!) {
+        stagedUploadsCreate(input: $input) {
+          stagedTargets {
+            url
+            resourceUrl
+            parameters {
+              name
+              value
+            }
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `,
+    {
+      input: [
+        {
+          filename: downloadedFile.filename,
+          mimeType: downloadedFile.mimeType,
+          httpMethod: "POST",
+          resource,
+          fileSize:
+            resource === "VIDEO"
+              ? String(downloadedFile.buffer.byteLength)
+              : undefined,
+        },
+      ],
+    },
+  );
+
+  assertNoUserErrors(
+    data.stagedUploadsCreate.userErrors,
+    "Failed to create staged upload target.",
+  );
+
+  const target = data.stagedUploadsCreate.stagedTargets[0];
+
+  if (!target) {
+    throw new Error("Shopify did not return a staged upload target.");
+  }
+
+  return target;
+}
+
+async function uploadFileToStagedTarget(
+  target: StagedUploadTarget,
+  downloadedFile: DownloadedFile,
+) {
+  const formData = new FormData();
+
+  for (const parameter of target.parameters) {
+    formData.append(parameter.name, parameter.value);
+  }
+
+  formData.append(
+    "file",
+    new Blob([new Uint8Array(downloadedFile.buffer)], {
+      type: downloadedFile.mimeType,
+    }),
+    downloadedFile.filename,
+  );
+
+  const response = await fetch(target.url, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to upload staged file: ${response.status} ${response.statusText}.`,
+    );
   }
 }
 
@@ -200,6 +385,20 @@ async function createTargetFile(
   admin: AdminGraphqlClient,
   file: FileRecord,
 ) {
+  const usesDirectSourceUrl = file.contentType === "IMAGE";
+  const originalSource = usesDirectSourceUrl
+    ? file.sourceUrl
+    : await (async () => {
+        const downloadedFile = await downloadSourceFile(file);
+        const stagedTarget = await createStagedUploadTarget(
+          admin,
+          file,
+          downloadedFile,
+        );
+        await uploadFileToStagedTarget(stagedTarget, downloadedFile);
+        return stagedTarget.resourceUrl;
+      })();
+
   const data = await targetAdminGraphql<
     {
       fileCreate: {
@@ -229,8 +428,8 @@ async function createTargetFile(
         {
           alt: file.alt,
           contentType: file.contentType,
-          filename: file.filename ?? undefined,
-          originalSource: file.sourceUrl,
+          filename: usesDirectSourceUrl ? getSafeFilename(file) : undefined,
+          originalSource,
         },
       ],
     },
@@ -322,43 +521,98 @@ export async function runFileMigration({
     identifier: string;
     message: string;
   }> = [];
+  const job = await createFileSyncJob({
+    sourceShop,
+    targetShop,
+    status: "syncing",
+  });
 
-  for (const file of candidateFiles) {
-    const identifier = file.filename ?? file.sourceUrl;
-    const signature = `${file.contentType}:${identifier}`;
+  await updateFileSyncJob(job.id, {
+    totalSourceFiles: candidateFiles.length,
+  });
 
-    if (targetSignatures.has(signature)) {
-      skippedCount += 1;
-      logs.push({
-        status: "skipped",
-        identifier,
-        message: "File already exists in target store.",
-      });
-      continue;
-    }
+  try {
+    for (const file of candidateFiles) {
+      const identifier = file.filename ?? file.sourceUrl;
+      const signature = `${file.contentType}:${identifier}`;
 
-    try {
-      const created = await createTargetFile(admin, file);
-      createdCount += 1;
-      targetSignatures.add(signature);
-      logs.push({
-        status: "created",
-        identifier,
-        message: created
+      if (targetSignatures.has(signature)) {
+        skippedCount += 1;
+        const message = "File already exists in target store.";
+        logs.push({
+          status: "skipped",
+          identifier,
+          message,
+        });
+        await createFileSyncLog({
+          jobId: job.id,
+          status: "skipped",
+          identifier,
+          message,
+        });
+        continue;
+      }
+
+      try {
+        const created = await createTargetFile(admin, file);
+        createdCount += 1;
+        targetSignatures.add(signature);
+        const message = created
           ? `Created file with status ${created.fileStatus}.`
-          : "Created file.",
-      });
-    } catch (error) {
-      failedCount += 1;
-      logs.push({
-        status: "failed",
-        identifier,
-        message: error instanceof Error ? error.message : "File migration failed.",
-      });
+          : "Created file.";
+        logs.push({
+          status: "created",
+          identifier,
+          message,
+        });
+        await createFileSyncLog({
+          jobId: job.id,
+          status: "created",
+          identifier,
+          message,
+        });
+      } catch (error) {
+        failedCount += 1;
+        const message =
+          error instanceof Error ? error.message : "File migration failed.";
+        logs.push({
+          status: "failed",
+          identifier,
+          message,
+        });
+        await createFileSyncLog({
+          jobId: job.id,
+          status: "failed",
+          identifier,
+          message,
+        });
+      }
     }
+
+    await updateFileSyncJob(job.id, {
+      status: failedCount > 0 ? "failed" : "completed",
+      totalSourceFiles: candidateFiles.length,
+      createdCount,
+      skippedCount,
+      failedCount,
+      errorMessage:
+        failedCount > 0 ? "One or more files failed to migrate." : null,
+    });
+  } catch (error) {
+    await updateFileSyncJob(job.id, {
+      status: "failed",
+      totalSourceFiles: candidateFiles.length,
+      createdCount,
+      skippedCount,
+      failedCount,
+      errorMessage:
+        error instanceof Error ? error.message : "File migration failed.",
+    });
+    throw error;
   }
 
   return {
+    jobId: job.id,
     sourceShop,
     totalSourceFiles: candidateFiles.length,
     createdCount,

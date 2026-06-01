@@ -81,3 +81,42 @@ model DefinitionSyncLog {
 
   @@index([jobId, createdAt])
 }
+
+model FileSyncJob {
+  id               String        @id @default(cuid())
+  sourceShop       String
+  targetShop       String
+  status           String        @default("pending")
+  totalSourceFiles Int           @default(0)
+  createdCount     Int           @default(0)
+  skippedCount     Int           @default(0)
+  failedCount      Int           @default(0)
+  errorMessage     String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  logs             FileSyncLog[]
+}
+
+model FileSyncLog {
+  id         String      @id @default(cuid())
+  jobId       String
+  status      String
+  identifier  String
+  message     String
+  createdAt   DateTime   @default(now())
+  job         FileSyncJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, createdAt])
+}
+
+model StoreConnectionHistory {
+  id         String   @id @default(cuid())
+  targetShop String
+  sourceShop String?
+  status     String
+  event      String
+  message    String
+  createdAt  DateTime @default(now())
+
+  @@index([targetShop, createdAt])
+}

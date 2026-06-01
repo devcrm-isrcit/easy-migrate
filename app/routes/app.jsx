@@ -1,4 +1,4 @@
-import { Outlet, useLoaderData, useRouteError } from "react-router";
+import { Link, Outlet, useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider as EmbeddedAppProvider } from "@shopify/shopify-app-react-router/react";
 import { NavMenu } from "@shopify/app-bridge-react";
@@ -20,11 +20,11 @@ export default function App() {
     <EmbeddedAppProvider embedded apiKey={apiKey}>
       <PolarisAppProvider i18n={enTranslations}>
         <NavMenu>
-          <a href="/app" rel="home">
+          <Link to="/app" rel="home">
             Dashboard
-          </a>
-          <a href="/app/files">Files Migration</a>
-          <a href="/app/history">Sync History</a>
+          </Link>
+          <Link to="/app/files">Files Migration</Link>
+          <Link to="/app/history">History</Link>
         </NavMenu>
         <Outlet />
       </PolarisAppProvider>
