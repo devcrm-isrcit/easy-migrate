@@ -12,10 +12,11 @@ import {
   Tabs,
   Text,
 } from "@shopify/polaris";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useLoaderData,
   useNavigate,
+  useSearchParams,
   type LoaderFunctionArgs,
 } from "react-router";
 import {
@@ -449,7 +450,10 @@ export default function HistoryPage() {
     connectionEvents: ConnectionHistoryEvent[];
   };
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [logsPage, setLogsPage] = useState(1);
+  const fileDetailsRef = useRef<HTMLDivElement | null>(null);
+  const definitionDetailsRef = useRef<HTMLDivElement | null>(null);
 
   const selectedTabIndex = Math.max(
     0,
@@ -471,6 +475,26 @@ export default function HistoryPage() {
     ? definitionJobs.find((job) => job.id === jobId)
     : null;
   const expandedFileJob = jobId ? fileJobs.find((job) => job.id === jobId) : null;
+
+  useEffect(() => {
+    if (!searchParams.get("jobId")) {
+      return;
+    }
+
+    const targetRef =
+      tab === "files" ? fileDetailsRef : tab === "connections" ? null : definitionDetailsRef;
+
+    if (!targetRef?.current) {
+      return;
+    }
+
+    window.setTimeout(() => {
+      targetRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 150);
+  }, [searchParams, tab, expandedFileJob, expandedDefinitionJob]);
 
   function navigateToTab(nextTab: HistoryTab) {
     navigate(`/app/history?tab=${nextTab}`);
@@ -610,6 +634,7 @@ export default function HistoryPage() {
                 )}
 
                 {expandedFileJob ? (
+                  <div ref={fileDetailsRef}>
                   <Card>
                     <BlockStack gap="300">
                       <Text as="h2" variant="headingMd">
@@ -775,6 +800,7 @@ export default function HistoryPage() {
                       ) : null}
                     </BlockStack>
                   </Card>
+                  </div>
                 ) : null}
               </>
             ) : null}
@@ -864,6 +890,7 @@ export default function HistoryPage() {
                 )}
 
                 {expandedDefinitionJob ? (
+                  <div ref={definitionDetailsRef}>
                   <Card>
                     <BlockStack gap="300">
                       <Text as="h2" variant="headingMd">
@@ -959,6 +986,7 @@ export default function HistoryPage() {
                       ) : null}
                     </BlockStack>
                   </Card>
+                  </div>
                 ) : null}
               </>
             ) : null}

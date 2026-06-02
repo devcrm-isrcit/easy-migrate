@@ -15,7 +15,7 @@ import {
   Text,
   TextField,
 } from "@shopify/polaris";
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   useFetcher,
   useLoaderData,
@@ -313,6 +313,8 @@ export default function DefinitionSyncDashboard() {
   const connectionFetcher = useFetcher<typeof action>();
   const scanFetcher = useFetcher<typeof action>();
   const syncFetcher = useFetcher<typeof action>();
+  const lastSubmittedSourceTokenRef = useRef("");
+  const latestSyncResultRef = useRef<HTMLDivElement | null>(null);
 
   const [sourceShop, setSourceShop] = useState("");
   const [sourceToken, setSourceToken] = useState("");
@@ -409,10 +411,26 @@ export default function DefinitionSyncDashboard() {
     setTokenStatus(connectionData.tokenStatus ?? "valid");
     writeStoredSourceCredential(shop.myshopifyDomain, {
       sourceShop: connectionData.sourceShop,
-      sourceToken,
+      sourceToken: lastSubmittedSourceTokenRef.current,
     });
     setShowConnectionForm(false);
-  }, [connectionData, shop.myshopifyDomain, sourceToken]);
+  }, [connectionData, shop.myshopifyDomain]);
+
+  useEffect(() => {
+    if (syncData?.intent !== "sync" || !syncData.ok) {
+      return;
+    }
+
+    setSelectedMetaobjectTypes([]);
+    setSelectedMetafieldKeys([]);
+
+    window.setTimeout(() => {
+      latestSyncResultRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 150);
+  }, [syncData]);
 
   const missingMetaobjects = preview?.metaobjects.missing ?? [];
   const existingMetaobjects = preview?.metaobjects.existing ?? [];
@@ -458,6 +476,7 @@ export default function DefinitionSyncDashboard() {
   }
 
   function handleSave() {
+    lastSubmittedSourceTokenRef.current = sourceToken.trim();
     connectionFetcher.submit(
       { intent: "save", sourceShop, sourceToken },
       { method: "post" },
@@ -554,7 +573,7 @@ export default function DefinitionSyncDashboard() {
                     </InlineStack>
                   </InlineStack>
                   <Text as="p" tone="subdued" variant="bodySm">
-                    Source credentials are kept only in this browser session.
+                    Source credentials are stored locally in this browser.
                   </Text>
                 </BlockStack>
               ) : (
@@ -578,9 +597,14 @@ export default function DefinitionSyncDashboard() {
                     <TextField
                       label="Source store domain"
                       autoComplete="off"
-                      value={sourceShop}
-                      onChange={setSourceShop}
-                      helpText="Example: source-store.myshopify.com"
+                      value={sourceShop.replace(/\.myshopify\.com$/i, "")}
+                      onChange={(val) =>
+                        setSourceShop(
+                          val.replace(/\.myshopify\.com$/i, ""),
+                        )
+                      }
+                      suffix=".myshopify.com"
+                      helpText="Enter store name only"
                       error={connectionData?.fieldErrors?.sourceShop}
                     />
                     <TextField
@@ -600,7 +624,7 @@ export default function DefinitionSyncDashboard() {
                       loading={isSaving}
                       onClick={handleSave}
                     >
-                      {sourceShop ? "Update connection" : "Connect"}
+                      {sourceShop ? "Connect" : "Update connection"}
                     </Button>
                     {sourceShop ? (
                       <Button onClick={() => setShowConnectionForm(false)}>
@@ -954,6 +978,7 @@ export default function DefinitionSyncDashboard() {
         {/* ── Latest Sync Result ── */}
         {latestJob ? (
           <Layout.Section>
+            <div ref={latestSyncResultRef}>
             <Card>
               <BlockStack gap="400">
                 <InlineStack align="space-between" blockAlign="center">
@@ -1004,6 +1029,7 @@ export default function DefinitionSyncDashboard() {
                 />
               </BlockStack>
             </Card>
+            </div>
           </Layout.Section>
         ) : null}
       </Layout>

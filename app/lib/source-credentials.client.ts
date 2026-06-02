@@ -14,7 +14,7 @@ export function readStoredSourceCredential(
     return null;
   }
 
-  const storedValue = window.sessionStorage.getItem(getStorageKey(targetShop));
+  const storedValue = window.localStorage.getItem(getStorageKey(targetShop));
 
   if (!storedValue) {
     return null;
@@ -47,7 +47,7 @@ export function writeStoredSourceCredential(
     return;
   }
 
-  window.sessionStorage.setItem(
+  window.localStorage.setItem(
     getStorageKey(targetShop),
     JSON.stringify(credential),
   );
@@ -58,5 +58,5 @@ export function clearStoredSourceCredential(targetShop: string) {
     return;
   }
 
-  window.sessionStorage.removeItem(getStorageKey(targetShop));
+  window.localStorage.removeItem(getStorageKey(targetShop));
 }
