@@ -14,7 +14,10 @@ export function getMetaobjectTypeLogicalKey(type: string) {
 }
 
 export function toMetaobjectDefinitionCreateType(type: string) {
-  return `$app:${getMetaobjectTypeLogicalKey(type)}`;
+  if (isAppReservedMetaobjectType(type)) {
+    return `$app:${getMetaobjectTypeLogicalKey(type)}`;
+  }
+  return type;
 }
 
 export function isAppReservedMetaobjectType(type: string) {

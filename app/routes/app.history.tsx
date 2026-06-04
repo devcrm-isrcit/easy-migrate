@@ -12,7 +12,7 @@ import {
   Tabs,
   Text,
 } from "@shopify/polaris";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   useLoaderData,
   useNavigate,
@@ -425,6 +425,124 @@ export async function loader({ request }: LoaderFunctionArgs) {
   };
 }
 
+function groupJobsByStore<T extends { sourceShop: string; targetShop: string }>(
+  jobs: T[],
+): Array<{ storeKey: string; sourceShop: string; targetShop: string; jobs: T[] }> {
+  const map = new Map<string, { sourceShop: string; targetShop: string; jobs: T[] }>();
+  for (const job of jobs) {
+    const key = `${job.sourceShop}::${job.targetShop}`;
+    if (!map.has(key)) {
+      map.set(key, { sourceShop: job.sourceShop, targetShop: job.targetShop, jobs: [] });
+    }
+    map.get(key)!.jobs.push(job);
+  }
+  return Array.from(map.entries()).map(([storeKey, group]) => ({ storeKey, ...group }));
+}
+
+function shortDomain(shop: string) {
+  return shop.replace(/\.myshopify\.com$/, "");
+}
+
+function StoreGroupHeader({
+  sourceShop,
+  targetShop,
+  jobCount,
+  expanded,
+  onToggle,
+}: {
+  sourceShop: string;
+  targetShop: string;
+  jobCount: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onToggle}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onToggle(); }}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        cursor: "pointer",
+        userSelect: "none",
+      }}
+    >
+      <span style={{
+        fontSize: 14,
+        transition: "transform 0.2s",
+        transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+        color: "var(--p-color-text-secondary)",
+      }}>
+        ▶
+      </span>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+        <div style={{
+          background: "var(--p-color-bg-fill-info)",
+          color: "var(--p-color-text-info-on-bg-fill)",
+          padding: "4px 10px",
+          borderRadius: 6,
+          fontSize: 13,
+          fontWeight: 600,
+        }}>
+          {shortDomain(sourceShop)}
+        </div>
+        <span style={{ fontSize: 16, color: "var(--p-color-text-secondary)" }}>→</span>
+        <div style={{
+          background: "var(--p-color-bg-fill-success)",
+          color: "var(--p-color-text-success-on-bg-fill)",
+          padding: "4px 10px",
+          borderRadius: 6,
+          fontSize: 13,
+          fontWeight: 600,
+        }}>
+          {shortDomain(targetShop)}
+        </div>
+      </div>
+      <Text as="span" variant="bodySm" tone="subdued">
+        {String(jobCount)} {jobCount === 1 ? "sync" : "syncs"}
+      </Text>
+    </div>
+  );
+}
+
+function JobRow({
+  job,
+  isSelected,
+  onToggle,
+  stats,
+}: {
+  job: { id: string; status: string; createdAt: string };
+  isSelected: boolean;
+  onToggle: () => void;
+  stats: ReactNode;
+}) {
+  return (
+    <Box
+      padding="300"
+      borderRadius="200"
+      background={isSelected ? "bg-surface-selected" : "bg-surface-secondary"}
+    >
+      <BlockStack gap="200">
+        <InlineStack align="space-between" blockAlign="center">
+          <InlineStack gap="200" blockAlign="center">
+            <StatusBadge status={job.status} />
+            <Text as="span" variant="bodySm" tone="subdued">
+              {new Date(job.createdAt).toLocaleString()}
+            </Text>
+          </InlineStack>
+          <Button size="slim" onClick={onToggle}>
+            {isSelected ? "Collapse" : "Details"}
+          </Button>
+        </InlineStack>
+        <InlineStack gap="300">{stats}</InlineStack>
+      </BlockStack>
+    </Box>
+  );
+}
+
 export default function HistoryPage() {
   const {
     tab,
@@ -475,6 +593,25 @@ export default function HistoryPage() {
     ? definitionJobs.find((job) => job.id === jobId)
     : null;
   const expandedFileJob = jobId ? fileJobs.find((job) => job.id === jobId) : null;
+
+  const groupedFileJobs = groupJobsByStore(fileJobs);
+  const groupedDefinitionJobs = groupJobsByStore(definitionJobs);
+  const allGroups = tab === "files" ? groupedFileJobs : groupedDefinitionJobs;
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+    () => new Set(allGroups.slice(1).map((g) => g.storeKey)),
+  );
+
+  function toggleGroup(storeKey: string) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(storeKey)) {
+        next.delete(storeKey);
+      } else {
+        next.add(storeKey);
+      }
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!searchParams.get("jobId")) {
@@ -543,6 +680,33 @@ export default function HistoryPage() {
     );
   }
 
+  function renderLogsPagination(totalLogPages: number) {
+    if (totalLogPages <= 1) return null;
+    return (
+      <InlineStack align="space-between" blockAlign="center">
+        <Text as="span" variant="bodySm" tone="subdued">
+          Page {String(logsPage)} of {String(totalLogPages)}
+        </Text>
+        <InlineStack gap="200">
+          <Button
+            size="slim"
+            onClick={() => setLogsPage((c) => Math.max(1, c - 1))}
+            disabled={logsPage === 1}
+          >
+            Previous
+          </Button>
+          <Button
+            size="slim"
+            onClick={() => setLogsPage((c) => Math.min(totalLogPages, c + 1))}
+            disabled={logsPage === totalLogPages}
+          >
+            Next
+          </Button>
+        </InlineStack>
+      </InlineStack>
+    );
+  }
+
   return (
     <Page
       title="History"
@@ -572,66 +736,51 @@ export default function HistoryPage() {
                     <p>No file migration history yet.</p>
                   </Banner>
                 ) : (
-                  <Card>
-                    <BlockStack gap="300">
-                      <Text as="h2" variant="headingMd">
-                        File migration jobs
-                      </Text>
-                      {fileJobs.map((job) => (
-                        <Box
-                          key={job.id}
-                          padding="300"
-                          borderRadius="200"
-                          background={
-                            job.id === jobId
-                              ? "bg-surface-selected"
-                              : "bg-surface-secondary"
-                          }
-                        >
-                          <BlockStack gap="200">
-                            <InlineStack align="space-between" blockAlign="center">
-                              <InlineStack gap="200" blockAlign="center">
-                                <StatusBadge status={job.status} />
-                                <Text as="span" variant="bodyMd" fontWeight="semibold">
-                                  {job.sourceShop} → {job.targetShop}
-                                </Text>
-                              </InlineStack>
-                              <InlineStack gap="200" blockAlign="center">
+                  groupedFileJobs.map((group) => (
+                    <Card key={group.storeKey}>
+                      <BlockStack gap="300">
+                        <StoreGroupHeader
+                          sourceShop={group.sourceShop}
+                          targetShop={group.targetShop}
+                          jobCount={group.jobs.length}
+                          expanded={!collapsedGroups.has(group.storeKey)}
+                          onToggle={() => toggleGroup(group.storeKey)}
+                        />
+                        {!collapsedGroups.has(group.storeKey) && <>
+                        <Divider />
+                        {group.jobs.map((job) => (
+                          <JobRow
+                            key={job.id}
+                            job={job}
+                            isSelected={job.id === jobId}
+                            onToggle={() =>
+                              navigate(
+                                job.id === jobId
+                                  ? `/app/history?tab=files&page=${String(page)}`
+                                  : `/app/history?tab=files&page=${String(page)}&jobId=${job.id}`,
+                              )
+                            }
+                            stats={
+                              <>
                                 <Text as="span" variant="bodySm" tone="subdued">
-                                  {new Date(job.createdAt).toLocaleString()}
+                                  Created: {String(job.createdCount)}
                                 </Text>
-                                <Button
-                                  size="slim"
-                                  onClick={() =>
-                                    navigate(
-                                      job.id === jobId
-                                        ? `/app/history?tab=files&page=${String(page)}`
-                                        : `/app/history?tab=files&page=${String(page)}&jobId=${job.id}`,
-                                    )
-                                  }
-                                >
-                                  {job.id === jobId ? "Collapse" : "Details"}
-                                </Button>
-                              </InlineStack>
-                            </InlineStack>
-                            <InlineStack gap="300">
-                              <Text as="span" variant="bodySm" tone="subdued">
-                                Created: {String(job.createdCount)}
-                              </Text>
-                              <Text as="span" variant="bodySm" tone="subdued">
-                                Skipped: {String(job.skippedCount)}
-                              </Text>
-                              <Text as="span" variant="bodySm" tone="critical">
-                                Failed: {String(job.failedCount)}
-                              </Text>
-                            </InlineStack>
-                          </BlockStack>
-                        </Box>
-                      ))}
-                      {renderPagination("files")}
-                    </BlockStack>
-                  </Card>
+                                <Text as="span" variant="bodySm" tone="subdued">
+                                  Skipped: {String(job.skippedCount)}
+                                </Text>
+                                <Text as="span" variant="bodySm" tone="critical">
+                                  Failed: {String(job.failedCount)}
+                                </Text>
+                              </>
+                            }
+                          />
+                        ))}
+                        </>}
+                      </BlockStack>
+                    </Card>
+                  ))
                 )}
+                {fileJobs.length > 0 && renderPagination("files")}
 
                 {expandedFileJob ? (
                   <div ref={fileDetailsRef}>
@@ -767,35 +916,7 @@ export default function HistoryPage() {
                               </tbody>
                             </table>
                           </div>
-                          {totalFileLogPages > 1 ? (
-                            <InlineStack align="space-between" blockAlign="center">
-                              <Text as="span" variant="bodySm" tone="subdued">
-                                Page {String(logsPage)} of {String(totalFileLogPages)}
-                              </Text>
-                              <InlineStack gap="200">
-                                <Button
-                                  size="slim"
-                                  onClick={() =>
-                                    setLogsPage((current) => Math.max(1, current - 1))
-                                  }
-                                  disabled={logsPage === 1}
-                                >
-                                  Previous
-                                </Button>
-                                <Button
-                                  size="slim"
-                                  onClick={() =>
-                                    setLogsPage((current) =>
-                                      Math.min(totalFileLogPages, current + 1),
-                                    )
-                                  }
-                                  disabled={logsPage === totalFileLogPages}
-                                >
-                                  Next
-                                </Button>
-                              </InlineStack>
-                            </InlineStack>
-                          ) : null}
+                          {renderLogsPagination(totalFileLogPages)}
                         </>
                       ) : null}
                     </BlockStack>
@@ -815,79 +936,62 @@ export default function HistoryPage() {
                     </p>
                   </Banner>
                 ) : (
-                  <Card>
-                    <BlockStack gap="300">
-                      <Text as="h2" variant="headingMd">
-                        {tab === "metaobjects"
-                          ? "Metaobject sync jobs"
-                          : "Metafield sync jobs"}
-                      </Text>
-                      {definitionJobs.map((job) => (
-                        <Box
-                          key={job.id}
-                          padding="300"
-                          borderRadius="200"
-                          background={
-                            job.id === jobId
-                              ? "bg-surface-selected"
-                              : "bg-surface-secondary"
-                          }
-                        >
-                          <BlockStack gap="200">
-                            <InlineStack align="space-between" blockAlign="center">
-                              <InlineStack gap="200" blockAlign="center">
-                                <StatusBadge status={job.status} />
-                                <Text as="span" variant="bodyMd" fontWeight="semibold">
-                                  {job.sourceShop} → {job.targetShop}
-                                </Text>
-                              </InlineStack>
-                              <InlineStack gap="200" blockAlign="center">
-                                <Text as="span" variant="bodySm" tone="subdued">
-                                  {new Date(job.createdAt).toLocaleString()}
-                                </Text>
-                                <Button
-                                  size="slim"
-                                  onClick={() =>
-                                    navigate(
-                                      job.id === jobId
-                                        ? `/app/history?tab=${tab}&page=${String(page)}`
-                                        : `/app/history?tab=${tab}&page=${String(page)}&jobId=${job.id}`,
-                                    )
-                                  }
-                                >
-                                  {job.id === jobId ? "Collapse" : "Details"}
-                                </Button>
-                              </InlineStack>
-                            </InlineStack>
-                            <InlineStack gap="300">
-                              {tab === "metaobjects" ? (
-                                <>
+                  groupedDefinitionJobs.map((group) => (
+                    <Card key={group.storeKey}>
+                      <BlockStack gap="300">
+                        <StoreGroupHeader
+                          sourceShop={group.sourceShop}
+                          targetShop={group.targetShop}
+                          jobCount={group.jobs.length}
+                          expanded={!collapsedGroups.has(group.storeKey)}
+                          onToggle={() => toggleGroup(group.storeKey)}
+                        />
+                        {!collapsedGroups.has(group.storeKey) && <>
+                        <Divider />
+                        {group.jobs.map((job) => (
+                          <JobRow
+                            key={job.id}
+                            job={job}
+                            isSelected={job.id === jobId}
+                            onToggle={() =>
+                              navigate(
+                                job.id === jobId
+                                  ? `/app/history?tab=${tab}&page=${String(page)}`
+                                  : `/app/history?tab=${tab}&page=${String(page)}&jobId=${job.id}`,
+                              )
+                            }
+                            stats={
+                              <>
+                                {tab === "metaobjects" ? (
+                                  <>
+                                    <Text as="span" variant="bodySm" tone="subdued">
+                                      Definitions: {String(job.createdMetaobjectDefinitions)}
+                                    </Text>
+                                    <Text as="span" variant="bodySm" tone="subdued">
+                                      Fields: {String(job.addedMetaobjectFields)}
+                                    </Text>
+                                    <Text as="span" variant="bodySm" tone="subdued">
+                                      Entries: {String(job.copiedMetaobjectEntries)}
+                                    </Text>
+                                  </>
+                                ) : (
                                   <Text as="span" variant="bodySm" tone="subdued">
-                                    Definitions: {String(job.createdMetaobjectDefinitions)}
+                                    Created: {String(job.createdMetafieldDefinitions)}
                                   </Text>
-                                  <Text as="span" variant="bodySm" tone="subdued">
-                                    Fields: {String(job.addedMetaobjectFields)}
-                                  </Text>
-                                  <Text as="span" variant="bodySm" tone="subdued">
-                                    Entries: {String(job.copiedMetaobjectEntries)}
-                                  </Text>
-                                </>
-                              ) : (
-                                <Text as="span" variant="bodySm" tone="subdued">
-                                  Created: {String(job.createdMetafieldDefinitions)}
+                                )}
+                                <Text as="span" variant="bodySm" tone="critical">
+                                  Failed: {String(job.failedCount)}
                                 </Text>
-                              )}
-                              <Text as="span" variant="bodySm" tone="critical">
-                                Failed: {String(job.failedCount)}
-                              </Text>
-                            </InlineStack>
-                          </BlockStack>
-                        </Box>
-                      ))}
-                      {renderPagination(tab)}
-                    </BlockStack>
-                  </Card>
+                              </>
+                            }
+                          />
+                        ))}
+                        </>}
+                      </BlockStack>
+                    </Card>
+                  ))
                 )}
+                {definitionJobs.length > 0 && renderPagination(tab)}
 
                 {expandedDefinitionJob ? (
                   <div ref={definitionDetailsRef}>
@@ -951,37 +1055,7 @@ export default function HistoryPage() {
                               new Date(log.createdAt).toLocaleString(),
                             ])}
                           />
-                          {(tab === "metaobjects"
-                            ? totalDefinitionLogPages
-                            : totalDefinitionLogPages) > 1 ? (
-                            <InlineStack align="space-between" blockAlign="center">
-                              <Text as="span" variant="bodySm" tone="subdued">
-                                Page {String(logsPage)} of {String(totalDefinitionLogPages)}
-                              </Text>
-                              <InlineStack gap="200">
-                                <Button
-                                  size="slim"
-                                  onClick={() =>
-                                    setLogsPage((current) => Math.max(1, current - 1))
-                                  }
-                                  disabled={logsPage === 1}
-                                >
-                                  Previous
-                                </Button>
-                                <Button
-                                  size="slim"
-                                  onClick={() =>
-                                    setLogsPage((current) =>
-                                      Math.min(totalDefinitionLogPages, current + 1),
-                                    )
-                                  }
-                                  disabled={logsPage === totalDefinitionLogPages}
-                                >
-                                  Next
-                                </Button>
-                              </InlineStack>
-                            </InlineStack>
-                          ) : null}
+                          {renderLogsPagination(totalDefinitionLogPages)}
                         </>
                       ) : null}
                     </BlockStack>

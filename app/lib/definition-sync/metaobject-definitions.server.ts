@@ -174,17 +174,24 @@ export async function createMetaobjectDefinition(
   definition: MetaobjectDefinitionRecord,
 ) {
   const targetType = toMetaobjectDefinitionCreateType(definition.type);
-  const access = isAppReservedMetaobjectType(targetType)
+  const validAdminValues = ["MERCHANT_READ", "MERCHANT_READ_WRITE"];
+  const sanitizedAdmin = validAdminValues.includes(definition.access?.admin ?? "")
+    ? definition.access!.admin
+    : "MERCHANT_READ_WRITE";
+
+  const validStorefrontValues = ["NONE", "PUBLIC_READ"];
+  const sanitizedStorefront = validStorefrontValues.includes(definition.access?.storefront ?? "")
+    ? definition.access!.storefront
+    : "NONE";
+
+  const access = isAppReservedMetaobjectType(definition.type)
     ? {
-        admin:
-          definition.access?.admin === "MERCHANT_READ"
-            ? "MERCHANT_READ"
-            : "MERCHANT_READ_WRITE",
-        storefront: definition.access?.storefront ?? "NONE",
+        admin: sanitizedAdmin,
+        storefront: sanitizedStorefront,
       }
-    : definition.access?.storefront
-      ? { storefront: definition.access.storefront }
-      : undefined;
+    : {
+        storefront: sanitizedStorefront,
+      };
 
   const data = await targetAdminGraphql<
     {

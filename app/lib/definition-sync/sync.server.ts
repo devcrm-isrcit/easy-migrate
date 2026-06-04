@@ -120,13 +120,16 @@ function buildTargetMetaobjectTypeBySourceType(
   preview: DefinitionScanPreview,
   targetDefinitions: MetaobjectDefinitionRecord[],
 ) {
-  const targetTypeByLogicalKey = new Map(
+  const targetAppReservedTypeByLogicalKey = new Map(
     targetDefinitions
       .filter((definition) => isAppReservedMetaobjectType(definition.type))
       .map((definition) => [
         getMetaobjectTypeLogicalKey(definition.type),
         definition.type,
       ]),
+  );
+  const targetTypeByExactType = new Map(
+    targetDefinitions.map((definition) => [definition.type, definition.type]),
   );
 
   const targetTypeBySourceType = new Map<string, string>();
@@ -135,12 +138,20 @@ function buildTargetMetaobjectTypeBySourceType(
     ...preview.metaobjects.missing,
     ...preview.metaobjects.existing.map((item) => item.source),
   ]) {
-    const logicalType = getMetaobjectTypeLogicalKey(definition.type);
-    const targetType = targetTypeByLogicalKey.get(logicalType);
+    const targetType = isAppReservedMetaobjectType(definition.type)
+      ? targetAppReservedTypeByLogicalKey.get(
+          getMetaobjectTypeLogicalKey(definition.type),
+        )
+      : targetTypeByExactType.get(definition.type);
 
     if (targetType) {
       targetTypeBySourceType.set(definition.type, targetType);
-      targetTypeBySourceType.set(logicalType, targetType);
+      if (isAppReservedMetaobjectType(definition.type)) {
+        targetTypeBySourceType.set(
+          getMetaobjectTypeLogicalKey(definition.type),
+          targetType,
+        );
+      }
     }
   }
 
@@ -968,7 +979,7 @@ export async function runDefinitionSync({
     }
 
     await updateSyncJob(job.id, {
-      status: "completed",
+      status: failedCount > 0 ? "completed_with_errors" : "completed",
       createdMetafieldDefinitions,
       createdMetaobjectDefinitions,
       addedMetaobjectFields,

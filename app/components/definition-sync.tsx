@@ -13,6 +13,7 @@ export function statusTone(status: string) {
     case "syncing":
     case "unchecked":
     case "skipped":
+    case "completed_with_errors":
       return "attention";
     case "invalid":
     case "failed":
@@ -23,6 +24,10 @@ export function statusTone(status: string) {
   }
 }
 
+const STATUS_LABELS: Record<string, string> = {
+  completed_with_errors: "partial",
+};
+
 export function StatusBadge({
   status,
   children,
@@ -30,7 +35,11 @@ export function StatusBadge({
   status: string;
   children?: string;
 }) {
-  return <Badge tone={statusTone(status)}>{children ?? status}</Badge>;
+  return (
+    <Badge tone={statusTone(status)}>
+      {children ?? STATUS_LABELS[status] ?? status}
+    </Badge>
+  );
 }
 
 export function SummaryTable({

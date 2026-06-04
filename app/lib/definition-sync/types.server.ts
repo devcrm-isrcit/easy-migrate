@@ -4,6 +4,7 @@ export const JOB_STATUSES = [
   "scanning",
   "syncing",
   "completed",
+  "completed_with_errors",
   "failed",
 ] as const;
 export const LOG_STATUSES = [

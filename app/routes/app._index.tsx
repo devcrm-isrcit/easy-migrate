@@ -444,6 +444,49 @@ export default function DefinitionSyncDashboard() {
   const allSelectableCount = allSelectableTypes.length + missingMetafields.length;
   const allSelected =
     allSelectableCount > 0 && totalSelectedCount === allSelectableCount;
+  const missingMetaobjectTypes = missingMetaobjects.map((item) => item.type);
+  const existingMetaobjectTypes = copyContent
+    ? existingMetaobjects.map((item) => item.source.type)
+    : [];
+  const missingMetafieldIdentifiers = missingMetafields.map(
+    (item) => `${item.ownerType}:${item.namespace}:${item.key}`,
+  );
+  const allMissingMetaobjectsSelected =
+    missingMetaobjectTypes.length > 0 &&
+    missingMetaobjectTypes.every((type) =>
+      selectedMetaobjectTypes.includes(type),
+    );
+  const allExistingMetaobjectsSelected =
+    existingMetaobjectTypes.length > 0 &&
+    existingMetaobjectTypes.every((type) =>
+      selectedMetaobjectTypes.includes(type),
+    );
+  const allMissingMetafieldsSelected =
+    missingMetafieldIdentifiers.length > 0 &&
+    missingMetafieldIdentifiers.every((id) =>
+      selectedMetafieldKeys.includes(id),
+    );
+  const missingMetafieldsByOwnerType = missingMetafields.reduce<
+    Array<{
+      ownerType: string;
+      items: typeof missingMetafields;
+    }>
+  >((groups, item) => {
+    const existingGroup = groups.find(
+      (group) => group.ownerType === item.ownerType,
+    );
+
+    if (existingGroup) {
+      existingGroup.items.push(item);
+      return groups;
+    }
+
+    groups.push({
+      ownerType: item.ownerType,
+      items: [item],
+    });
+    return groups;
+  }, []);
 
   const metafieldNameByIdentifier = new Map<string, string>();
   const metaobjectNameByType = new Map<string, string>();
@@ -532,6 +575,36 @@ export default function DefinitionSyncDashboard() {
         ),
       );
     }
+  }
+
+  function toggleMissingMetaobjectsSelectAll() {
+    setSelectedMetaobjectTypes((current) => {
+      if (allMissingMetaobjectsSelected) {
+        return current.filter((type) => !missingMetaobjectTypes.includes(type));
+      }
+
+      return [...new Set([...current, ...missingMetaobjectTypes])];
+    });
+  }
+
+  function toggleExistingMetaobjectsSelectAll() {
+    setSelectedMetaobjectTypes((current) => {
+      if (allExistingMetaobjectsSelected) {
+        return current.filter((type) => !existingMetaobjectTypes.includes(type));
+      }
+
+      return [...new Set([...current, ...existingMetaobjectTypes])];
+    });
+  }
+
+  function toggleMissingMetafieldsSelectAll() {
+    setSelectedMetafieldKeys((current) => {
+      if (allMissingMetafieldsSelected) {
+        return current.filter((id) => !missingMetafieldIdentifiers.includes(id));
+      }
+
+      return [...new Set([...current, ...missingMetafieldIdentifiers])];
+    });
   }
 
   return (
@@ -781,9 +854,23 @@ export default function DefinitionSyncDashboard() {
 
                         {missingMetaobjects.length > 0 ? (
                           <BlockStack gap="200">
-                            <Text as="h3" variant="headingSm">
-                              Missing metaobjects
-                            </Text>
+                            <InlineStack
+                              align="space-between"
+                              blockAlign="center"
+                            >
+                              <Text as="h3" variant="headingSm">
+                                Missing metaobjects
+                              </Text>
+                              <Button
+                                size="slim"
+                                onClick={toggleMissingMetaobjectsSelectAll}
+                                disabled={isSyncing}
+                              >
+                                {allMissingMetaobjectsSelected
+                                  ? "Clear all"
+                                  : "Select all"}
+                              </Button>
+                            </InlineStack>
                             {missingMetaobjects.map((item) => (
                               <Box
                                 key={item.type}
@@ -832,9 +919,23 @@ export default function DefinitionSyncDashboard() {
 
                         {copyContent && existingMetaobjects.length > 0 ? (
                           <BlockStack gap="200">
-                            <Text as="h3" variant="headingSm">
-                              Existing metaobjects (copy entries)
-                            </Text>
+                            <InlineStack
+                              align="space-between"
+                              blockAlign="center"
+                            >
+                              <Text as="h3" variant="headingSm">
+                                Existing metaobjects (copy entries)
+                              </Text>
+                              <Button
+                                size="slim"
+                                onClick={toggleExistingMetaobjectsSelectAll}
+                                disabled={isSyncing}
+                              >
+                                {allExistingMetaobjectsSelected
+                                  ? "Clear all"
+                                  : "Select all"}
+                              </Button>
+                            </InlineStack>
                             {existingMetaobjects.map((item) => (
                               <Box
                                 key={item.source.type}
@@ -889,65 +990,85 @@ export default function DefinitionSyncDashboard() {
 
                         {missingMetafields.length > 0 ? (
                           <BlockStack gap="200">
-                            <Text as="h3" variant="headingSm">
-                              Missing metafields
-                            </Text>
-                            {missingMetafields.map((item) => {
-                              const identifier = `${item.ownerType}:${item.namespace}:${item.key}`;
-                              return (
-                                <Box
-                                  key={identifier}
-                                  padding="200"
-                                  borderRadius="200"
-                                  background="bg-surface-secondary"
-                                >
-                                  <div
-                                    onClick={() =>
-                                      toggleMetafieldSelection(identifier)
-                                    }
-                                    style={selectableRowStyle}
-                                  >
-                                    <InlineStack
-                                      align="space-between"
-                                      blockAlign="center"
+                            <InlineStack
+                              align="space-between"
+                              blockAlign="center"
+                            >
+                              <Text as="h3" variant="headingSm">
+                                Missing metafields
+                              </Text>
+                              <Button
+                                size="slim"
+                                onClick={toggleMissingMetafieldsSelectAll}
+                                disabled={isSyncing}
+                              >
+                                {allMissingMetafieldsSelected
+                                  ? "Clear all"
+                                  : "Select all"}
+                              </Button>
+                            </InlineStack>
+                            {missingMetafieldsByOwnerType.map((group) => (
+                              <BlockStack key={group.ownerType} gap="150">
+                                <Text as="h4" variant="headingXs" tone="subdued">
+                                  {group.ownerType} ({group.items.length})
+                                </Text>
+                                {group.items.map((item) => {
+                                  const identifier = `${item.ownerType}:${item.namespace}:${item.key}`;
+                                  return (
+                                    <Box
+                                      key={identifier}
+                                      padding="200"
+                                      borderRadius="200"
+                                      background="bg-surface-secondary"
                                     >
-                                      <BlockStack gap="050">
-                                        <Text
-                                          as="span"
-                                          variant="bodyMd"
-                                          fontWeight="semibold"
-                                        >
-                                          {item.name}
-                                        </Text>
-                                        <Text
-                                          as="span"
-                                          variant="bodySm"
-                                          tone="subdued"
-                                        >
-                                          {item.ownerType} · {item.namespace}.
-                                          {item.key} · {item.type}
-                                        </Text>
-                                      </BlockStack>
                                       <div
-                                        onClick={(event) =>
-                                          event.stopPropagation()
+                                        onClick={() =>
+                                          toggleMetafieldSelection(identifier)
                                         }
+                                        style={selectableRowStyle}
                                       >
-                                        <Checkbox
-                                          label=""
-                                          checked={selectedMetafieldKeys.includes(
-                                            identifier,
-                                          )}
-                                          onChange={() =>
-                                            toggleMetafieldSelection(identifier)
-                                          }
-                                        />
+                                        <InlineStack
+                                          align="space-between"
+                                          blockAlign="center"
+                                        >
+                                          <BlockStack gap="050">
+                                            <Text
+                                              as="span"
+                                              variant="bodyMd"
+                                              fontWeight="semibold"
+                                            >
+                                              {item.name}
+                                            </Text>
+                                            <Text
+                                              as="span"
+                                              variant="bodySm"
+                                              tone="subdued"
+                                            >
+                                              {item.namespace}.{item.key} · {item.type}
+                                            </Text>
+                                          </BlockStack>
+                                          <div
+                                            onClick={(event) =>
+                                              event.stopPropagation()
+                                            }
+                                          >
+                                            <Checkbox
+                                              label=""
+                                              checked={selectedMetafieldKeys.includes(
+                                                identifier,
+                                              )}
+                                              onChange={() =>
+                                                toggleMetafieldSelection(identifier)
+                                              }
+                                            />
+                                          </div>
+                                        </InlineStack>
                                       </div>
-                                    </InlineStack>
-                                  </div>
-                                </Box>
-                              );
-                            })}
+                                    </Box>
+                                  );
+                                })}
+                              </BlockStack>
+                            ))}
                           </BlockStack>
                         ) : null}
                       </BlockStack>

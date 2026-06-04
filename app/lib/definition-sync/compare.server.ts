@@ -63,10 +63,13 @@ export function compareMetaobjectDefinitions(
   sourceDefinitions: MetaobjectDefinitionRecord[],
   targetDefinitions: MetaobjectDefinitionRecord[],
 ) {
-  const targetByType = new Map(
+  const targetAppReservedByLogicalType = new Map(
     targetDefinitions
       .filter((definition) => isAppReservedMetaobjectType(definition.type))
       .map((definition) => [getMetaobjectTypeLogicalKey(definition.type), definition]),
+  );
+  const targetByExactType = new Map(
+    targetDefinitions.map((definition) => [definition.type, definition]),
   );
 
   const missing: MetaobjectDefinitionRecord[] = [];
@@ -74,9 +77,11 @@ export function compareMetaobjectDefinitions(
   const conflicts: MetaobjectComparisonItem[] = [];
 
   for (const sourceDefinition of sourceDefinitions) {
-    const targetDefinition = targetByType.get(
-      getMetaobjectTypeLogicalKey(sourceDefinition.type),
-    );
+    const targetDefinition = isAppReservedMetaobjectType(sourceDefinition.type)
+      ? targetAppReservedByLogicalType.get(
+          getMetaobjectTypeLogicalKey(sourceDefinition.type),
+        )
+      : targetByExactType.get(sourceDefinition.type);
 
     if (!targetDefinition) {
       missing.push(sourceDefinition);
