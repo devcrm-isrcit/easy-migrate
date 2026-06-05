@@ -645,6 +645,49 @@ export async function buildDefinitionScanPreview({
     );
   }
 
+  const missingCountByOwnerType = new Map<string, number>();
+  const existingCountByOwnerType = new Map<string, number>();
+  const conflictCountByOwnerType = new Map<string, number>();
+
+  for (const definition of metafieldComparison.missing) {
+    missingCountByOwnerType.set(
+      definition.ownerType,
+      (missingCountByOwnerType.get(definition.ownerType) ?? 0) + 1,
+    );
+  }
+
+  for (const definition of metafieldComparison.existing) {
+    existingCountByOwnerType.set(
+      definition.ownerType,
+      (existingCountByOwnerType.get(definition.ownerType) ?? 0) + 1,
+    );
+  }
+
+  for (const definition of metafieldComparison.conflicts) {
+    conflictCountByOwnerType.set(
+      definition.source.ownerType,
+      (conflictCountByOwnerType.get(definition.source.ownerType) ?? 0) + 1,
+    );
+  }
+
+  const sourceAccessByOwnerType = new Map(
+    sourceMetafields.ownerTypeAccess.map((item) => [item.ownerType, item.accessible]),
+  );
+  const targetAccessByOwnerType = new Map(
+    targetMetafields.ownerTypeAccess.map((item) => [item.ownerType, item.accessible]),
+  );
+  const ownerTypeStatus = [...new Set([
+    ...sourceMetafields.ownerTypeAccess.map((item) => item.ownerType),
+    ...targetMetafields.ownerTypeAccess.map((item) => item.ownerType),
+  ])].map((ownerType) => ({
+    ownerType,
+    sourceAccessible: sourceAccessByOwnerType.get(ownerType) ?? false,
+    targetAccessible: targetAccessByOwnerType.get(ownerType) ?? false,
+    missingCount: missingCountByOwnerType.get(ownerType) ?? 0,
+    existingCount: existingCountByOwnerType.get(ownerType) ?? 0,
+    conflictCount: conflictCountByOwnerType.get(ownerType) ?? 0,
+  }));
+
   return {
     sourceShop,
     targetShop,
@@ -669,6 +712,7 @@ export async function buildDefinitionScanPreview({
     },
     metafields: metafieldComparison,
     metaobjects: metaobjectComparison,
+    ownerTypeStatus,
     ownerTypeWarnings,
   };
 }

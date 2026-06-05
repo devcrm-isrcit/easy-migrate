@@ -12,6 +12,8 @@ import {
   Layout,
   Page,
   ProgressBar,
+  Select,
+  Spinner,
   Text,
   TextField,
 } from "@shopify/polaris";
@@ -41,6 +43,10 @@ import {
   validateShopDomain,
 } from "../lib/definition-sync/shop-domain.server";
 import {
+  SUPPORTED_METAFIELD_OWNER_TYPES,
+  type DefinitionScanPreview as ServerDefinitionScanPreview,
+} from "../lib/definition-sync/types.shared";
+import {
   clearStoredSourceCredential,
   readStoredSourceCredential,
   writeStoredSourceCredential,
@@ -57,6 +63,12 @@ const stickyActionBarStyle: CSSProperties = {
 
 const selectableRowStyle: CSSProperties = {
   cursor: "pointer",
+};
+
+const scrollPanelStyle: CSSProperties = {
+  maxHeight: "28rem",
+  overflowY: "auto",
+  paddingRight: "0.25rem",
 };
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -259,53 +271,7 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 }
 
-interface ScanPreview {
-  summary: Record<string, number>;
-  metafields: {
-    missing: Array<{
-      id?: string;
-      name: string;
-      namespace: string;
-      key: string;
-      ownerType: string;
-      type: string;
-    }>;
-    existing: Array<{
-      name: string;
-      namespace: string;
-      key: string;
-      ownerType: string;
-      type: string;
-    }>;
-    conflicts: Array<{
-      key: string;
-      source: { name: string; type: string };
-      target: { type: string };
-    }>;
-  };
-  metaobjects: {
-    missing: Array<{
-      type: string;
-      name: string;
-      fieldDefinitions: Array<{ key: string; name: string }>;
-    }>;
-    existing: Array<{
-      source: {
-        type: string;
-        name: string;
-        fieldDefinitions: Array<{ key: string; name: string }>;
-      };
-    }>;
-    conflicts: Array<{
-      source: {
-        type: string;
-        name: string;
-        fieldDefinitions: Array<{ key: string; name: string }>;
-      };
-    }>;
-  };
-  ownerTypeWarnings: string[];
-}
+type ScanPreview = ServerDefinitionScanPreview;
 
 export default function DefinitionSyncDashboard() {
   const { shop, latestJob } = useLoaderData<typeof loader>();
@@ -315,10 +281,11 @@ export default function DefinitionSyncDashboard() {
   const syncFetcher = useFetcher<typeof action>();
   const lastSubmittedSourceTokenRef = useRef("");
   const latestSyncResultRef = useRef<HTMLDivElement | null>(null);
+  const connectionFormRef = useRef<HTMLFormElement | null>(null);
 
   const [sourceShop, setSourceShop] = useState("");
   const [sourceToken, setSourceToken] = useState("");
-  const [tokenStatus, setTokenStatus] = useState("unchecked");
+  const [tokenStatus, setTokenStatus] = useState<string>("unchecked");
   const [selectedMetaobjectTypes, setSelectedMetaobjectTypes] = useState<
     string[]
   >([]);
@@ -327,6 +294,24 @@ export default function DefinitionSyncDashboard() {
   );
   const [copyContent, setCopyContent] = useState(false);
   const [showConnectionForm, setShowConnectionForm] = useState(true);
+  const [credentialsLoaded, setCredentialsLoaded] = useState(false);
+  const [selectionQuery, setSelectionQuery] = useState("");
+  const [selectionView, setSelectionView] = useState<
+    "all" | "metaobjects" | "metafields"
+  >("all");
+  const [metafieldOwnerFilter, setMetafieldOwnerFilter] = useState("all");
+
+  useEffect(() => {
+    const stored = readStoredSourceCredential(shop.myshopifyDomain);
+    if (stored) {
+      setSourceShop(stored.sourceShop);
+      setSourceToken(stored.sourceToken);
+      setTokenStatus("valid");
+      setShowConnectionForm(false);
+      lastSubmittedSourceTokenRef.current = stored.sourceToken;
+    }
+    setCredentialsLoaded(true);
+  }, [shop.myshopifyDomain]);
 
   const isSaving = connectionFetcher.state !== "idle";
   const isScanning = scanFetcher.state !== "idle";
@@ -363,22 +348,13 @@ export default function DefinitionSyncDashboard() {
       }
     | undefined;
 
-  useEffect(() => {
-    const storedCredential = readStoredSourceCredential(shop.myshopifyDomain);
-
-    if (!storedCredential) {
-      return;
-    }
-
-    setSourceShop(storedCredential.sourceShop);
-    setSourceToken(storedCredential.sourceToken);
-    setTokenStatus("unchecked");
-    setShowConnectionForm(false);
-  }, [shop.myshopifyDomain]);
 
   useEffect(() => {
     setSelectedMetaobjectTypes([]);
     setSelectedMetafieldKeys([]);
+    setSelectionQuery("");
+    setSelectionView("all");
+    setMetafieldOwnerFilter("all");
   }, [preview]);
 
   useEffect(() => {
@@ -435,6 +411,13 @@ export default function DefinitionSyncDashboard() {
   const missingMetaobjects = preview?.metaobjects.missing ?? [];
   const existingMetaobjects = preview?.metaobjects.existing ?? [];
   const missingMetafields = preview?.metafields.missing ?? [];
+  const ownerTypeStatus = preview?.ownerTypeStatus ?? [];
+  const hasConnectionDraft = sourceShop.trim().length > 0 || sourceToken.trim().length > 0;
+  const hasVerifiedConnection =
+    sourceShop.trim().length > 0 &&
+    sourceToken.trim().length > 0 &&
+    tokenStatus === "valid";
+  const normalizedSelectionQuery = selectionQuery.trim().toLowerCase();
   const totalSelectedCount =
     selectedMetaobjectTypes.length + selectedMetafieldKeys.length;
   const allSelectableTypes = [
@@ -487,6 +470,121 @@ export default function DefinitionSyncDashboard() {
     });
     return groups;
   }, []);
+  const metafieldOwnerOptions = [
+    { label: "All owner types", value: "all" },
+    ...missingMetafieldsByOwnerType.map((group) => ({
+      label: `${group.ownerType} (${group.items.length})`,
+      value: group.ownerType,
+    })),
+  ];
+  const filteredMissingMetaobjects = missingMetaobjects.filter((item) => {
+    if (!normalizedSelectionQuery) {
+      return true;
+    }
+
+    return [
+      item.name,
+      item.type,
+      ...item.fieldDefinitions.map((field) => `${field.name} ${field.key}`),
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedSelectionQuery);
+  });
+  const filteredExistingMetaobjects = existingMetaobjects.filter((item) => {
+    if (!normalizedSelectionQuery) {
+      return true;
+    }
+
+    return [
+      item.source.name,
+      item.source.type,
+      ...item.source.fieldDefinitions.map(
+        (field) => `${field.name} ${field.key}`,
+      ),
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedSelectionQuery);
+  });
+  const filteredMissingMetafields = missingMetafields.filter((item) => {
+    if (
+      metafieldOwnerFilter !== "all" &&
+      item.ownerType !== metafieldOwnerFilter
+    ) {
+      return false;
+    }
+
+    if (!normalizedSelectionQuery) {
+      return true;
+    }
+
+    return [item.name, item.namespace, item.key, item.type, item.ownerType]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedSelectionQuery);
+  });
+  const filteredMissingMetafieldsByOwnerType = filteredMissingMetafields.reduce<
+    Array<{
+      ownerType: string;
+      items: typeof filteredMissingMetafields;
+    }>
+  >((groups, item) => {
+    const existingGroup = groups.find(
+      (group) => group.ownerType === item.ownerType,
+    );
+
+    if (existingGroup) {
+      existingGroup.items.push(item);
+      return groups;
+    }
+
+    groups.push({
+      ownerType: item.ownerType,
+      items: [item],
+    });
+    return groups;
+  }, []);
+  const visibleMetaobjectTypes = [
+    ...filteredMissingMetaobjects.map((item) => item.type),
+    ...(copyContent
+      ? filteredExistingMetaobjects.map((item) => item.source.type)
+      : []),
+  ];
+  const visibleMetafieldIdentifiers = filteredMissingMetafields.map(
+    (item) => `${item.ownerType}:${item.namespace}:${item.key}`,
+  );
+  const visibleSelectedCount =
+    visibleMetaobjectTypes.filter((type) =>
+      selectedMetaobjectTypes.includes(type),
+    ).length +
+    visibleMetafieldIdentifiers.filter((id) =>
+      selectedMetafieldKeys.includes(id),
+    ).length;
+  const allVisibleSelected =
+    visibleMetaobjectTypes.length + visibleMetafieldIdentifiers.length > 0 &&
+    visibleSelectedCount ===
+      visibleMetaobjectTypes.length + visibleMetafieldIdentifiers.length;
+  const inaccessibleOwnerTypes = ownerTypeStatus.filter(
+    (item) => !item.sourceAccessible || !item.targetAccessible,
+  );
+  const missingOwnerTypes = ownerTypeStatus.filter(
+    (item) =>
+      item.sourceAccessible &&
+      item.targetAccessible &&
+      item.missingCount > 0,
+  );
+  const existingOnlyOwnerTypes = ownerTypeStatus.filter(
+    (item) =>
+      item.sourceAccessible &&
+      item.targetAccessible &&
+      item.missingCount === 0 &&
+      (item.existingCount > 0 || item.conflictCount > 0),
+  );
+  const untouchedOwnerTypes = SUPPORTED_METAFIELD_OWNER_TYPES.filter(
+    (ownerType) =>
+      !ownerTypeStatus.some((item) => item.ownerType === ownerType),
+  );
 
   const metafieldNameByIdentifier = new Map<string, string>();
   const metaobjectNameByType = new Map<string, string>();
@@ -519,9 +617,26 @@ export default function DefinitionSyncDashboard() {
   }
 
   function handleSave() {
-    lastSubmittedSourceTokenRef.current = sourceToken.trim();
+    const formData = connectionFormRef.current
+      ? new FormData(connectionFormRef.current)
+      : null;
+    const submittedSourceShop = String(
+      formData?.get("sourceShop") ?? sourceShop,
+    ).trim();
+    const submittedSourceToken = String(
+      formData?.get("sourceToken") ?? sourceToken,
+    ).trim();
+
+    setSourceShop(submittedSourceShop);
+    setSourceToken(submittedSourceToken);
+    lastSubmittedSourceTokenRef.current = submittedSourceToken;
+
     connectionFetcher.submit(
-      { intent: "save", sourceShop, sourceToken },
+      {
+        intent: "save",
+        sourceShop: submittedSourceShop,
+        sourceToken: submittedSourceToken,
+      },
       { method: "post" },
     );
   }
@@ -607,6 +722,47 @@ export default function DefinitionSyncDashboard() {
     });
   }
 
+  function toggleVisibleSelections() {
+    if (allVisibleSelected) {
+      setSelectedMetaobjectTypes((current) =>
+        current.filter((type) => !visibleMetaobjectTypes.includes(type)),
+      );
+      setSelectedMetafieldKeys((current) =>
+        current.filter((id) => !visibleMetafieldIdentifiers.includes(id)),
+      );
+      return;
+    }
+
+    setSelectedMetaobjectTypes((current) => [
+      ...new Set([...current, ...visibleMetaobjectTypes]),
+    ]);
+    setSelectedMetafieldKeys((current) => [
+      ...new Set([...current, ...visibleMetafieldIdentifiers]),
+    ]);
+  }
+
+  if (!credentialsLoaded) {
+    return (
+      <Page
+        title="Definition Sync"
+        subtitle={`${shop.name} (${shop.myshopifyDomain})`}
+      >
+        <Layout>
+          <Layout.Section>
+            <Card>
+              <BlockStack gap="300" inlineAlign="center">
+                <Spinner size="small" />
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Loading…
+                </Text>
+              </BlockStack>
+            </Card>
+          </Layout.Section>
+        </Layout>
+      </Page>
+    );
+  }
+
   return (
     <Page
       title="Definition Sync"
@@ -632,9 +788,10 @@ export default function DefinitionSyncDashboard() {
                     <InlineStack gap="200">
                       <Button
                         size="slim"
-                        onClick={() => setShowConnectionForm(true)}
+                        onClick={handleSave}
+                        loading={isSaving}
                       >
-                        Edit
+                        Re-sync
                       </Button>
                       <Button
                         size="slim"
@@ -666,45 +823,55 @@ export default function DefinitionSyncDashboard() {
                     </Banner>
                   ) : null}
 
-                  <FormLayout>
-                    <TextField
-                      label="Source store domain"
-                      autoComplete="off"
-                      value={sourceShop.replace(/\.myshopify\.com$/i, "")}
-                      onChange={(val) =>
-                        setSourceShop(
-                          val.replace(/\.myshopify\.com$/i, ""),
-                        )
-                      }
-                      suffix=".myshopify.com"
-                      helpText="Enter store name only"
-                      error={connectionData?.fieldErrors?.sourceShop}
-                    />
-                    <TextField
-                      label="Admin API access token"
-                      autoComplete="off"
-                      type="password"
-                      value={sourceToken}
-                      onChange={setSourceToken}
-                      helpText="Create a custom app in the source store and paste its Admin API token here."
-                      error={connectionData?.fieldErrors?.sourceToken}
-                    />
-                  </FormLayout>
+                  <form
+                    ref={connectionFormRef}
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      handleSave();
+                    }}
+                  >
+                    <BlockStack gap="300">
+                      <FormLayout>
+                        <TextField
+                          label="Source store domain"
+                          name="sourceShop"
+                          autoComplete="off"
+                          value={sourceShop.replace(/\.myshopify\.com$/i, "")}
+                          onChange={(val) =>
+                            setSourceShop(
+                              val.replace(/\.myshopify\.com$/i, ""),
+                            )
+                          }
+                          suffix=".myshopify.com"
+                          helpText="Enter store name only"
+                          error={connectionData?.fieldErrors?.sourceShop}
+                        />
+                        <TextField
+                          label="Admin API access token"
+                          name="sourceToken"
+                          autoComplete="off"
+                          type="password"
+                          value={sourceToken}
+                          onChange={setSourceToken}
+                          helpText="Create a custom app in the source store and paste its Admin API token here."
+                          error={connectionData?.fieldErrors?.sourceToken}
+                        />
+                      </FormLayout>
 
-                  <InlineStack gap="200">
-                    <Button
-                      variant="primary"
-                      loading={isSaving}
-                      onClick={handleSave}
-                    >
-                      {sourceShop ? "Connect" : "Update connection"}
-                    </Button>
-                    {sourceShop ? (
-                      <Button onClick={() => setShowConnectionForm(false)}>
-                        Cancel
-                      </Button>
-                    ) : null}
-                  </InlineStack>
+                      <InlineStack gap="200">
+                        <Button submit variant="primary" loading={isSaving}>
+                          {hasConnectionDraft ? "Update connection" : "Connect"}
+                        </Button>
+                        {sourceShop ? (
+                          <Button
+                            onClick={() => setShowConnectionForm(false)}
+                          >
+                            Cancel
+                          </Button>
+                        ) : null}
+                      </InlineStack>
+                    </BlockStack>
+                  </form>
                 </BlockStack>
               )}
             </BlockStack>
@@ -712,7 +879,7 @@ export default function DefinitionSyncDashboard() {
         </Layout.AnnotatedSection>
 
         {/* ── Scan & Sync Section ── */}
-        {sourceShop && sourceToken ? (
+        {hasVerifiedConnection ? (
           <Layout.Section>
             <BlockStack gap="400">
               <Card>
@@ -789,34 +956,201 @@ export default function DefinitionSyncDashboard() {
                     </BlockStack>
                   </Card>
 
+                  <Card>
+                    <BlockStack gap="300">
+                      <BlockStack gap="100">
+                        <Text as="h2" variant="headingMd">
+                          Metafield owner type status
+                        </Text>
+                        <Text as="p" tone="subdued" variant="bodySm">
+                          See which owner types have missing definitions, which
+                          are already covered, and which are blocked by access.
+                        </Text>
+                      </BlockStack>
+
+                      <BlockStack gap="200">
+                        <Text as="h3" variant="headingSm">
+                          Missing in target ({String(missingOwnerTypes.length)})
+                        </Text>
+                        {missingOwnerTypes.length > 0 ? (
+                          <InlineStack gap="200" wrap>
+                            {missingOwnerTypes.map((item) => (
+                              <Badge key={item.ownerType} tone="attention">
+                                {`${item.ownerType} (${String(item.missingCount)})`}
+                              </Badge>
+                            ))}
+                          </InlineStack>
+                        ) : (
+                          <Text as="p" tone="subdued" variant="bodySm">
+                            No owner types with missing metafield definitions.
+                          </Text>
+                        )}
+                      </BlockStack>
+
+                      <Divider />
+
+                      <BlockStack gap="200">
+                        <Text as="h3" variant="headingSm">
+                          Already present / no missing defs (
+                          {String(existingOnlyOwnerTypes.length)})
+                        </Text>
+                        {existingOnlyOwnerTypes.length > 0 ? (
+                          <InlineStack gap="200" wrap>
+                            {existingOnlyOwnerTypes.map((item) => (
+                              <Badge key={item.ownerType} tone="success">
+                                {`${item.ownerType}${
+                                  item.existingCount > 0
+                                    ? ` (${String(item.existingCount)} existing)`
+                                    : ""
+                                }${
+                                  item.conflictCount > 0
+                                    ? ` (${String(item.conflictCount)} conflict)`
+                                    : ""
+                                }`}
+                              </Badge>
+                            ))}
+                          </InlineStack>
+                        ) : (
+                          <Text as="p" tone="subdued" variant="bodySm">
+                            No accessible owner types are fully matched yet.
+                          </Text>
+                        )}
+                      </BlockStack>
+
+                      <Divider />
+
+                      <BlockStack gap="200">
+                        <Text as="h3" variant="headingSm">
+                          Inaccessible ({String(inaccessibleOwnerTypes.length)})
+                        </Text>
+                        {inaccessibleOwnerTypes.length > 0 ? (
+                          <InlineStack gap="200" wrap>
+                            {inaccessibleOwnerTypes.map((item) => (
+                              <Badge key={item.ownerType} tone="critical">
+                                {`${item.ownerType}${
+                                  !item.sourceAccessible && !item.targetAccessible
+                                    ? " (source + target)"
+                                    : !item.sourceAccessible
+                                      ? " (source)"
+                                      : " (target)"
+                                }`}
+                              </Badge>
+                            ))}
+                          </InlineStack>
+                        ) : (
+                          <Text as="p" tone="subdued" variant="bodySm">
+                            All scanned owner types were accessible.
+                          </Text>
+                        )}
+                      </BlockStack>
+
+                      {untouchedOwnerTypes.length > 0 ? (
+                        <>
+                          <Divider />
+                          <BlockStack gap="200">
+                            <Text as="h3" variant="headingSm">
+                              No defs found in either store
+                            </Text>
+                            <Text as="p" tone="subdued" variant="bodySm">
+                              {untouchedOwnerTypes.join(", ")}
+                            </Text>
+                          </BlockStack>
+                        </>
+                      ) : null}
+                    </BlockStack>
+                  </Card>
+
                   {allSelectableCount > 0 ? (
                     <Card>
                       <BlockStack gap="400">
                         <div style={stickyActionBarStyle}>
-                          <InlineStack
-                            align="space-between"
-                            blockAlign="center"
-                          >
-                            <Text as="h2" variant="headingMd">
-                              Select definitions to sync
-                            </Text>
-                            <InlineStack gap="200">
-                              <Button
-                                onClick={toggleSelectAll}
-                                disabled={isSyncing}
-                              >
-                                {allSelected ? "Clear all" : "Select all"}
-                              </Button>
-                              <Button
-                                variant="primary"
-                                onClick={handleSync}
-                                loading={isSyncing}
-                                disabled={isSaving || totalSelectedCount === 0}
-                              >
-                                Sync selected ({String(totalSelectedCount)})
-                              </Button>
+                          <BlockStack gap="300">
+                            <InlineStack
+                              align="space-between"
+                              blockAlign="center"
+                            >
+                              <BlockStack gap="050">
+                                <Text as="h2" variant="headingMd">
+                                  Select definitions to sync
+                                </Text>
+                                <Text as="p" tone="subdued" variant="bodySm">
+                                  Selected {String(totalSelectedCount)} of{" "}
+                                  {String(allSelectableCount)} definitions
+                                </Text>
+                              </BlockStack>
+                              <InlineStack gap="200">
+                                <Button
+                                  onClick={toggleVisibleSelections}
+                                  disabled={
+                                    isSyncing ||
+                                    visibleMetaobjectTypes.length +
+                                      visibleMetafieldIdentifiers.length ===
+                                      0
+                                  }
+                                >
+                                  {allVisibleSelected
+                                    ? "Clear visible"
+                                    : "Select visible"}
+                                </Button>
+                                <Button
+                                  onClick={toggleSelectAll}
+                                  disabled={isSyncing}
+                                >
+                                  {allSelected ? "Clear all" : "Select all"}
+                                </Button>
+                                <Button
+                                  variant="primary"
+                                  onClick={handleSync}
+                                  loading={isSyncing}
+                                  disabled={isSaving || totalSelectedCount === 0}
+                                >
+                                  Sync selected ({String(totalSelectedCount)})
+                                </Button>
+                              </InlineStack>
                             </InlineStack>
-                          </InlineStack>
+
+                            <InlineStack gap="300" blockAlign="end" wrap>
+                              <div style={{ minWidth: "16rem", flex: "1 1 18rem" }}>
+                                <TextField
+                                  label="Search definitions"
+                                  autoComplete="off"
+                                  value={selectionQuery}
+                                  onChange={setSelectionQuery}
+                                  placeholder="Search by name, type, namespace, or key"
+                                  clearButton
+                                  onClearButtonClick={() => setSelectionQuery("")}
+                                />
+                              </div>
+                              <div style={{ minWidth: "14rem" }}>
+                                <Select
+                                  label="Show"
+                                  options={[
+                                    { label: "Everything", value: "all" },
+                                    { label: "Metaobjects only", value: "metaobjects" },
+                                    { label: "Metafields only", value: "metafields" },
+                                  ]}
+                                  value={selectionView}
+                                  onChange={(value) =>
+                                    setSelectionView(
+                                      value as "all" | "metaobjects" | "metafields",
+                                    )
+                                  }
+                                  disabled={isSyncing}
+                                />
+                              </div>
+                              <div style={{ minWidth: "16rem" }}>
+                                <Select
+                                  label="Metafield owner type"
+                                  options={metafieldOwnerOptions}
+                                  value={metafieldOwnerFilter}
+                                  onChange={setMetafieldOwnerFilter}
+                                  disabled={
+                                    isSyncing || selectionView === "metaobjects"
+                                  }
+                                />
+                              </div>
+                            </InlineStack>
+                          </BlockStack>
                         </div>
 
                         <Checkbox
@@ -852,7 +1186,8 @@ export default function DefinitionSyncDashboard() {
                           </BlockStack>
                         ) : null}
 
-                        {missingMetaobjects.length > 0 ? (
+                        {selectionView !== "metafields" &&
+                        missingMetaobjects.length > 0 ? (
                           <BlockStack gap="200">
                             <InlineStack
                               align="space-between"
@@ -871,53 +1206,69 @@ export default function DefinitionSyncDashboard() {
                                   : "Select all"}
                               </Button>
                             </InlineStack>
-                            {missingMetaobjects.map((item) => (
-                              <Box
-                                key={item.type}
-                                padding="200"
-                                borderRadius="200"
-                                background="bg-surface-secondary"
-                              >
-                                <div
-                                  onClick={() => toggleMetaobjectSelection(item.type)}
-                                  style={selectableRowStyle}
-                                >
-                                  <InlineStack
-                                    align="space-between"
-                                    blockAlign="center"
+                            <div style={scrollPanelStyle}>
+                              <BlockStack gap="200">
+                                {filteredMissingMetaobjects.map((item) => (
+                                  <Box
+                                    key={item.type}
+                                    padding="200"
+                                    borderRadius="200"
+                                    background="bg-surface-secondary"
                                   >
-                                    <BlockStack gap="050">
-                                      <Text
-                                        as="span"
-                                        variant="bodyMd"
-                                        fontWeight="semibold"
+                                    <div
+                                      onClick={() =>
+                                        toggleMetaobjectSelection(item.type)
+                                      }
+                                      style={selectableRowStyle}
+                                    >
+                                      <InlineStack
+                                        align="space-between"
+                                        blockAlign="center"
                                       >
-                                        {item.name}
-                                      </Text>
-                                      <Text as="span" variant="bodySm" tone="subdued">
-                                        Type: {item.type} ·{" "}
-                                        {item.fieldDefinitions.length} fields
-                                      </Text>
-                                    </BlockStack>
-                                    <div onClick={(event) => event.stopPropagation()}>
-                                      <Checkbox
-                                        label=""
-                                        checked={selectedMetaobjectTypes.includes(
-                                          item.type,
-                                        )}
-                                        onChange={() =>
-                                          toggleMetaobjectSelection(item.type)
-                                        }
-                                      />
+                                        <BlockStack gap="050">
+                                          <Text
+                                            as="span"
+                                            variant="bodyMd"
+                                            fontWeight="semibold"
+                                          >
+                                            {item.name}
+                                          </Text>
+                                          <Text
+                                            as="span"
+                                            variant="bodySm"
+                                            tone="subdued"
+                                          >
+                                            Type: {item.type} ·{" "}
+                                            {item.fieldDefinitions.length} fields
+                                          </Text>
+                                        </BlockStack>
+                                        <div
+                                          onClick={(event) =>
+                                            event.stopPropagation()
+                                          }
+                                        >
+                                          <Checkbox
+                                            label=""
+                                            checked={selectedMetaobjectTypes.includes(
+                                              item.type,
+                                            )}
+                                            onChange={() =>
+                                              toggleMetaobjectSelection(item.type)
+                                            }
+                                          />
+                                        </div>
+                                      </InlineStack>
                                     </div>
-                                  </InlineStack>
-                                </div>
-                              </Box>
-                            ))}
+                                  </Box>
+                                ))}
+                              </BlockStack>
+                            </div>
                           </BlockStack>
                         ) : null}
 
-                        {copyContent && existingMetaobjects.length > 0 ? (
+                        {selectionView !== "metafields" &&
+                        copyContent &&
+                        existingMetaobjects.length > 0 ? (
                           <BlockStack gap="200">
                             <InlineStack
                               align="space-between"
@@ -936,50 +1287,67 @@ export default function DefinitionSyncDashboard() {
                                   : "Select all"}
                               </Button>
                             </InlineStack>
-                            {existingMetaobjects.map((item) => (
-                              <Box
-                                key={item.source.type}
-                                padding="200"
-                                borderRadius="200"
-                                background="bg-surface-secondary"
-                              >
-                                <div
-                                  onClick={() =>
-                                    toggleMetaobjectSelection(item.source.type)
-                                  }
-                                  style={selectableRowStyle}
-                                >
-                                  <InlineStack
-                                    align="space-between"
-                                    blockAlign="center"
+                            <div style={scrollPanelStyle}>
+                              <BlockStack gap="200">
+                                {filteredExistingMetaobjects.map((item) => (
+                                  <Box
+                                    key={item.source.type}
+                                    padding="200"
+                                    borderRadius="200"
+                                    background="bg-surface-secondary"
                                   >
-                                    <BlockStack gap="050">
-                                      <Text
-                                        as="span"
-                                        variant="bodyMd"
-                                        fontWeight="semibold"
-                                      >
-                                        {item.source.name}
-                                      </Text>
-                                      <Text as="span" variant="bodySm" tone="subdued">
-                                        Type: {item.source.type} · Definition exists, entries will be copied
-                                      </Text>
-                                    </BlockStack>
-                                    <div onClick={(event) => event.stopPropagation()}>
-                                      <Checkbox
-                                        label=""
-                                        checked={selectedMetaobjectTypes.includes(
+                                    <div
+                                      onClick={() =>
+                                        toggleMetaobjectSelection(
                                           item.source.type,
-                                        )}
-                                        onChange={() =>
-                                          toggleMetaobjectSelection(item.source.type)
-                                        }
-                                      />
+                                        )
+                                      }
+                                      style={selectableRowStyle}
+                                    >
+                                      <InlineStack
+                                        align="space-between"
+                                        blockAlign="center"
+                                      >
+                                        <BlockStack gap="050">
+                                          <Text
+                                            as="span"
+                                            variant="bodyMd"
+                                            fontWeight="semibold"
+                                          >
+                                            {item.source.name}
+                                          </Text>
+                                          <Text
+                                            as="span"
+                                            variant="bodySm"
+                                            tone="subdued"
+                                          >
+                                            Type: {item.source.type} · Definition
+                                            exists, entries will be copied
+                                          </Text>
+                                        </BlockStack>
+                                        <div
+                                          onClick={(event) =>
+                                            event.stopPropagation()
+                                          }
+                                        >
+                                          <Checkbox
+                                            label=""
+                                            checked={selectedMetaobjectTypes.includes(
+                                              item.source.type,
+                                            )}
+                                            onChange={() =>
+                                              toggleMetaobjectSelection(
+                                                item.source.type,
+                                              )
+                                            }
+                                          />
+                                        </div>
+                                      </InlineStack>
                                     </div>
-                                  </InlineStack>
-                                </div>
-                              </Box>
-                            ))}
+                                  </Box>
+                                ))}
+                              </BlockStack>
+                            </div>
                           </BlockStack>
                         ) : null}
 
@@ -988,7 +1356,8 @@ export default function DefinitionSyncDashboard() {
                           <Divider />
                         ) : null}
 
-                        {missingMetafields.length > 0 ? (
+                        {selectionView !== "metaobjects" &&
+                        missingMetafields.length > 0 ? (
                           <BlockStack gap="200">
                             <InlineStack
                               align="space-between"
@@ -1007,68 +1376,75 @@ export default function DefinitionSyncDashboard() {
                                   : "Select all"}
                               </Button>
                             </InlineStack>
-                            {missingMetafieldsByOwnerType.map((group) => (
-                              <BlockStack key={group.ownerType} gap="150">
-                                <Text as="h4" variant="headingXs" tone="subdued">
-                                  {group.ownerType} ({group.items.length})
-                                </Text>
-                                {group.items.map((item) => {
-                                  const identifier = `${item.ownerType}:${item.namespace}:${item.key}`;
-                                  return (
-                                    <Box
-                                      key={identifier}
-                                      padding="200"
-                                      borderRadius="200"
-                                      background="bg-surface-secondary"
-                                    >
-                                      <div
-                                        onClick={() =>
-                                          toggleMetafieldSelection(identifier)
-                                        }
-                                        style={selectableRowStyle}
-                                      >
-                                        <InlineStack
-                                          align="space-between"
-                                          blockAlign="center"
+                            <div style={scrollPanelStyle}>
+                              <BlockStack gap="200">
+                                {filteredMissingMetafieldsByOwnerType.map((group) => (
+                                  <BlockStack key={group.ownerType} gap="150">
+                                    <Text as="h4" variant="headingXs" tone="subdued">
+                                      {group.ownerType} ({group.items.length})
+                                    </Text>
+                                    {group.items.map((item) => {
+                                      const identifier = `${item.ownerType}:${item.namespace}:${item.key}`;
+                                      return (
+                                        <Box
+                                          key={identifier}
+                                          padding="200"
+                                          borderRadius="200"
+                                          background="bg-surface-secondary"
                                         >
-                                          <BlockStack gap="050">
-                                            <Text
-                                              as="span"
-                                              variant="bodyMd"
-                                              fontWeight="semibold"
-                                            >
-                                              {item.name}
-                                            </Text>
-                                            <Text
-                                              as="span"
-                                              variant="bodySm"
-                                              tone="subdued"
-                                            >
-                                              {item.namespace}.{item.key} · {item.type}
-                                            </Text>
-                                          </BlockStack>
                                           <div
-                                            onClick={(event) =>
-                                              event.stopPropagation()
+                                            onClick={() =>
+                                              toggleMetafieldSelection(identifier)
                                             }
+                                            style={selectableRowStyle}
                                           >
-                                            <Checkbox
-                                              label=""
-                                              checked={selectedMetafieldKeys.includes(
-                                                identifier,
-                                              )}
-                                              onChange={() =>
-                                                toggleMetafieldSelection(identifier)
-                                              }
-                                            />
+                                            <InlineStack
+                                              align="space-between"
+                                              blockAlign="center"
+                                            >
+                                              <BlockStack gap="050">
+                                                <Text
+                                                  as="span"
+                                                  variant="bodyMd"
+                                                  fontWeight="semibold"
+                                                >
+                                                  {item.name}
+                                                </Text>
+                                                <Text
+                                                  as="span"
+                                                  variant="bodySm"
+                                                  tone="subdued"
+                                                >
+                                                  {item.namespace}.{item.key} ·{" "}
+                                                  {item.type}
+                                                </Text>
+                                              </BlockStack>
+                                              <div
+                                                onClick={(event) =>
+                                                  event.stopPropagation()
+                                                }
+                                              >
+                                                <Checkbox
+                                                  label=""
+                                                  checked={selectedMetafieldKeys.includes(
+                                                    identifier,
+                                                  )}
+                                                  onChange={() =>
+                                                    toggleMetafieldSelection(
+                                                      identifier,
+                                                    )
+                                                  }
+                                                />
+                                              </div>
+                                            </InlineStack>
                                           </div>
-                                        </InlineStack>
-                                      </div>
-                                    </Box>
-                                  );
-                                })}
+                                        </Box>
+                                      );
+                                    })}
+                                  </BlockStack>
+                                ))}
                               </BlockStack>
-                            ))}
+                            </div>
                           </BlockStack>
                         ) : null}
                       </BlockStack>
@@ -1085,12 +1461,23 @@ export default function DefinitionSyncDashboard() {
               ) : null}
             </BlockStack>
           </Layout.Section>
-        ) : sourceShop ? (
+        ) : isSaving ? (
+          <Layout.Section>
+            <Card>
+              <BlockStack gap="300" inlineAlign="center">
+                <Spinner size="small" />
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Verifying source store connection…
+                </Text>
+              </BlockStack>
+            </Card>
+          </Layout.Section>
+        ) : sourceShop || sourceToken ? (
           <Layout.Section>
             <Banner tone="warning">
               <p>
-                Connect a valid source store token above to scan definitions or
-                run a sync.
+                Verify a valid source store token above before scanning
+                definitions or running a sync.
               </p>
             </Banner>
           </Layout.Section>
