@@ -1509,6 +1509,19 @@ export default function DefinitionSyncDashboard() {
                   </Banner>
                 ) : null}
 
+                {latestJob.copiedMetaobjectEntries > 0 ? (
+                  <Banner tone="warning">
+                    <p>
+                      <strong>Reference fields not migrated:</strong> Metaobject fields of type{" "}
+                      <strong>product</strong>, <strong>collection</strong>,{" "}
+                      <strong>product variant</strong>, <strong>page</strong>, and{" "}
+                      <strong>URL</strong> cannot be automatically copied between stores. These
+                      fields have been left empty in the destination store and must be manually
+                      updated after migration.
+                    </p>
+                  </Banner>
+                ) : null}
+
                 <SummaryTable
                   rows={[
                     [
