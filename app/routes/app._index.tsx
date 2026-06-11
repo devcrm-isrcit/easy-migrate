@@ -86,6 +86,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const shopPayload = await shopResponse.json();
   return {
     shop: shopPayload.data.shop,
+    adminAccessToken: session.accessToken,
     latestJob: latestJob
       ? {
           id: latestJob.id,
@@ -274,7 +275,7 @@ export async function action({ request }: ActionFunctionArgs) {
 type ScanPreview = ServerDefinitionScanPreview;
 
 export default function DefinitionSyncDashboard() {
-  const { shop, latestJob } = useLoaderData<typeof loader>();
+  const { adminAccessToken, shop, latestJob } = useLoaderData<typeof loader>();
 
   const connectionFetcher = useFetcher<typeof action>();
   const scanFetcher = useFetcher<typeof action>();
@@ -771,6 +772,15 @@ export default function DefinitionSyncDashboard() {
       <Layout>
         {/* ── Connection Section ── */}
         <Layout.AnnotatedSection
+          title="Admin token"
+          description="Reveal the installed shop's Admin API token from this app session. This uses the existing Easy Migrate installation and does not request extra scopes."
+        >
+          <Card>
+            <AdminTokenCard token={adminAccessToken} />
+          </Card>
+        </Layout.AnnotatedSection>
+
+        <Layout.AnnotatedSection
           title="Source store"
           description="Connect the source store you want to copy metafield and metaobject definitions from. Provide the .myshopify.com domain and a custom-app Admin API token."
         >
@@ -847,7 +857,7 @@ export default function DefinitionSyncDashboard() {
                           error={connectionData?.fieldErrors?.sourceShop}
                         />
                         <TextField
-                          label="Admin API access token"
+                          label="Source store Admin token"
                           name="sourceToken"
                           autoComplete="off"
                           type="password"
@@ -1555,5 +1565,54 @@ export default function DefinitionSyncDashboard() {
         ) : null}
       </Layout>
     </Page>
+  );
+}
+
+function AdminTokenCard({ token }: { token?: string | null }) {
+  const [isVisible, setIsVisible] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const displayToken = token ?? "";
+
+  async function handleCopy() {
+    if (!displayToken) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(displayToken);
+    setCopied(true);
+
+    window.setTimeout(() => {
+      setCopied(false);
+    }, 1500);
+  }
+
+  return (
+    <BlockStack gap="300">
+      <Text as="p" tone="subdued" variant="bodySm">
+        Use this token when this store needs to act as the source store in
+        another Easy Migrate session.
+      </Text>
+      <Box
+        background="bg-surface-secondary"
+        borderColor="border"
+        borderRadius="300"
+        borderWidth="025"
+        padding="300"
+      >
+        <Text as="p" variant="bodyMd" breakWord>
+          {isVisible
+            ? displayToken || "No token available for this session."
+            : "\u2022".repeat(Math.max(displayToken.length, 24))}
+        </Text>
+      </Box>
+      <InlineStack gap="200">
+        <Button onClick={() => setIsVisible((current) => !current)} disabled={!displayToken}>
+          {isVisible ? "Hide token" : "Reveal token"}
+        </Button>
+        <Button onClick={handleCopy} disabled={!displayToken}>
+          {copied ? "Copied" : "Copy token"}
+        </Button>
+      </InlineStack>
+    </BlockStack>
   );
 }
