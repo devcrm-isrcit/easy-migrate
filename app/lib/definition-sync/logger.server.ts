@@ -68,6 +68,39 @@ export async function getLatestSyncJob(targetShop: string) {
   });
 }
 
+export async function getAppCreatedDefinitionKeys(targetShop: string) {
+  const jobs = await prisma.definitionSyncJob.findMany({
+    where: { targetShop },
+    select: { id: true },
+  });
+
+  const metafieldKeys = new Set<string>();
+  const metaobjectTypes = new Set<string>();
+
+  if (!jobs.length) {
+    return { metafieldKeys, metaobjectTypes };
+  }
+
+  const logs = await prisma.definitionSyncLog.findMany({
+    where: {
+      jobId: { in: jobs.map((job) => job.id) },
+      status: "created",
+      itemType: { in: ["metafield_definition", "metaobject_definition"] },
+    },
+    select: { itemType: true, itemKey: true },
+  });
+
+  for (const log of logs) {
+    if (log.itemType === "metafield_definition") {
+      metafieldKeys.add(log.itemKey);
+    } else {
+      metaobjectTypes.add(log.itemKey);
+    }
+  }
+
+  return { metafieldKeys, metaobjectTypes };
+}
+
 export async function getAllSyncJobs(
   targetShop: string,
   page = 1,

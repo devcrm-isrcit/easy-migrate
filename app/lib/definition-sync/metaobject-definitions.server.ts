@@ -223,7 +223,10 @@ export async function createMetaobjectDefinition(
         type: targetType,
         description: definition.description,
         displayNameKey: definition.displayNameKey,
-        access,
+        access: {
+          admin: "MERCHANT_READ_WRITE",
+          storefront: "PUBLIC_READ",
+        },
         capabilities: definition.capabilities?.publishable?.enabled
           ? { publishable: { enabled: true } }
           : undefined,

@@ -183,6 +183,10 @@ export async function createMetafieldDefinition(
     {
       definition: {
         name: definition.name,
+        access: {
+          admin: "MERCHANT_READ_WRITE",
+          storefront: "PUBLIC_READ",
+        },
         namespace: definition.namespace,
         key: definition.key,
         ownerType: definition.ownerType,

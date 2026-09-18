@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   useFetcher,
   useLoaderData,
+  useNavigate,
   type ActionFunctionArgs,
   type LoaderFunctionArgs,
 } from "react-router";
@@ -12,6 +13,7 @@ import {
   Field,
   Icon,
   LinkButton,
+  Modal,
   Pill,
   StatGrid,
   StatTile,
@@ -26,6 +28,7 @@ import {
   buildDefinitionScanPreview,
   runDefinitionSync,
 } from "../lib/definition-sync/sync.server";
+import { deleteAppCreatedDefinitions } from "../lib/definition-sync/delete-definitions.server";
 import { validateSourceToken } from "../lib/definition-sync/source-admin.server";
 import {
   normalizeShopDomain,
@@ -180,6 +183,39 @@ export async function action({ request }: ActionFunctionArgs) {
     return { ok: true, intent, message: "Source session cleared." };
   }
 
+  if (intent === "delete_definitions") {
+    const deleteMetafields = String(formData.get("deleteMetafields")) === "true";
+    const deleteMetaobjects = String(formData.get("deleteMetaobjects")) === "true";
+
+    if (!deleteMetafields && !deleteMetaobjects) {
+      return {
+        ok: false,
+        intent,
+        error: "Select at least one type to delete.",
+      };
+    }
+
+    try {
+      const result = await deleteAppCreatedDefinitions({
+        admin,
+        targetShop: session.shop,
+        deleteMetafields,
+        deleteMetaobjects,
+      });
+
+      return { ok: true, intent, result };
+    } catch (error) {
+      return {
+        ok: false,
+        intent,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to delete definitions.",
+      };
+    }
+  }
+
   const domainError = validateShopDomain(sourceShopInput);
 
   if (domainError) {
@@ -253,6 +289,7 @@ const STATUS_LABELS: Record<string, string> = {
 
 export default function DefinitionSyncDashboard() {
   const { adminAccessToken, shop, latestJob } = useLoaderData<typeof loader>();
+  const navigate = useNavigate();
 
   const connectionFetcher = useFetcher<typeof action>();
   const scanFetcher = useFetcher<typeof action>();
@@ -1272,13 +1309,17 @@ export default function DefinitionSyncDashboard() {
                   </StatGrid>
 
                   <div className="em-row-inline">
-                    <a
-                      className="em-btn em-btn--secondary em-btn--sm"
-                      href={`/app/history?tab=metaobjects&jobId=${latestJob.id}`}
+                    <Button
+                      size="sm"
+                      icon="description"
+                      onClick={() =>
+                        navigate(
+                          `/app/history?tab=metaobjects&jobId=${latestJob.id}`,
+                        )
+                      }
                     >
-                      <Icon name="description" size={18} />
                       View full log
-                    </a>
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -1473,6 +1514,8 @@ export default function DefinitionSyncDashboard() {
             </div>
 
             <AdminTokenCard token={adminAccessToken} />
+
+            <DangerZoneCard shopDomain={shop.myshopifyDomain} />
           </aside>
         </div>
 
@@ -1571,6 +1614,139 @@ function AdminTokenCard({ token }: { token?: string | null }) {
           <p className="em-body-sm">No token available for this session.</p>
         )}
       </div>
+    </div>
+  );
+}
+
+function DangerZoneCard({ shopDomain }: { shopDomain: string }) {
+  const deleteFetcher = useFetcher<typeof action>();
+  const [deleteMetaobjects, setDeleteMetaobjects] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  const isDeleting = deleteFetcher.state !== "idle";
+  const deleteData = deleteFetcher.data as
+    | {
+        ok: boolean;
+        intent: string;
+        error?: string;
+        result?: {
+          deletedMetafieldDefinitions: number;
+          deletedMetaobjectDefinitions: number;
+          failed: Array<{ type: string; key: string; message: string }>;
+        };
+      }
+    | undefined;
+
+  const deleteResult =
+    deleteData?.intent === "delete_definitions" && deleteData.ok
+      ? deleteData.result
+      : null;
+  const deleteError =
+    deleteData?.intent === "delete_definitions" && !deleteData.ok
+      ? deleteData.error
+      : null;
+  const canDelete = deleteMetaobjects;
+
+  function handleConfirmDelete() {
+    setShowConfirm(false);
+    deleteFetcher.submit(
+      {
+        intent: "delete_definitions",
+        deleteMetafields: "false",
+        deleteMetaobjects: deleteMetaobjects ? "true" : "false",
+      },
+      { method: "post" },
+    );
+  }
+
+  return (
+    <div className="em-card em-card--flush">
+      <div className="em-card__header">
+        <div>
+          <h3 className="em-section-heading">Danger zone</h3>
+          <p className="em-body-sm" style={{ marginTop: 4 }}>
+            Remove definitions this app created
+          </p>
+        </div>
+      </div>
+      <div className="em-card__body">
+        <p className="em-body-sm">
+          Permanently delete metaobject definitions that Easy Migrate created
+          on this store, including any values stored in them. Definitions you
+          or another app created are never touched.
+        </p>
+
+        {deleteError ? (
+          <Banner tone="critical" title="Deletion failed">
+            {deleteError}
+          </Banner>
+        ) : null}
+
+        {deleteResult ? (
+          <Banner
+            tone={deleteResult.failed.length > 0 ? "warning" : "success"}
+            title="Deletion complete"
+          >
+            <p className="em-body-sm">
+              {`Deleted ${String(deleteResult.deletedMetaobjectDefinitions)} metaobject definition(s).`}
+              {deleteResult.failed.length > 0
+                ? ` ${String(deleteResult.failed.length)} item(s) failed:`
+                : ""}
+            </p>
+            {deleteResult.failed.length > 0 ? (
+              <ul className="em-body-sm" style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                {deleteResult.failed.map((failure) => (
+                  <li key={failure.key}>
+                    <code className="em-code-chip">{failure.key}</code>
+                    {` — ${failure.message}`}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </Banner>
+        ) : null}
+
+        <label className="em-checkbox-label">
+          <input
+            className="em-checkbox"
+            type="checkbox"
+            checked={deleteMetaobjects}
+            onChange={(event) => setDeleteMetaobjects(event.target.checked)}
+            disabled={isDeleting}
+          />
+          Delete all metaobjects (and values) created by this app
+        </label>
+
+        <Button
+          variant="critical"
+          icon="delete"
+          fullWidth
+          disabled={!canDelete || isDeleting}
+          loading={isDeleting}
+          onClick={() => setShowConfirm(true)}
+        >
+          Delete metaobjects
+        </Button>
+      </div>
+
+      {showConfirm ? (
+        <Modal
+          title="Confirm deletion"
+          onClose={() => setShowConfirm(false)}
+          footer={
+            <>
+              <Button onClick={() => setShowConfirm(false)}>Cancel</Button>
+              <Button variant="critical" onClick={handleConfirmDelete}>
+                Yes, delete permanently
+              </Button>
+            </>
+          }
+        >
+          <p className="em-body-sm">
+            {`This will permanently delete all metaobject definitions created by this app on ${shopDomain}, along with any values stored in them. This cannot be undone.`}
+          </p>
+        </Modal>
+      ) : null}
     </div>
   );
 }
