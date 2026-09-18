@@ -1,17 +1,3 @@
-import {
-  Badge,
-  Banner,
-  BlockStack,
-  Box,
-  Button,
-  Card,
-  Divider,
-  InlineStack,
-  Layout,
-  Page,
-  Tabs,
-  Text,
-} from "@shopify/polaris";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   useLoaderData,
@@ -20,10 +6,14 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 import {
-  KeyValueTable,
-  StatusBadge,
-  SummaryTable,
-} from "../components/definition-sync";
+  Banner,
+  Button,
+  EmptyState,
+  Icon,
+  LinkButton,
+  Pill,
+  formatDateTime,
+} from "../components/easy-migrate-ui";
 import {
   getAllSyncJobs,
   getSyncLogs,
@@ -38,13 +28,30 @@ import { authenticate } from "../shopify.server";
 
 const JOBS_PER_PAGE = 10;
 const CONNECTIONS_PER_PAGE = 20;
+const LOGS_PER_STEP = 10;
 const HISTORY_TABS = [
   { id: "files", content: "Files history" },
-  { id: "metaobjects", content: "Metaobject history" },
-  { id: "metafields", content: "Metafield history" },
-  { id: "connections", content: "Store connection history" },
+  { id: "metaobjects", content: "Metaobject" },
+  { id: "metafields", content: "Metafield" },
+  { id: "connections", content: "Store connection" },
 ] as const;
 type HistoryTab = (typeof HISTORY_TABS)[number]["id"];
+
+const STATUS_LABELS: Record<string, string> = {
+  completed: "Completed",
+  completed_with_errors: "Completed with errors",
+  failed: "Failed",
+  syncing: "Running",
+  scanning: "Running",
+  pending: "Pending",
+  created: "Created",
+  exists: "Already in target",
+  skipped: "Skipped",
+  conflict: "Conflict",
+  valid: "Connected",
+  invalid: "Token invalid",
+  cleared: "Session cleared",
+};
 
 interface FileHistoryJob {
   id: string;
@@ -110,15 +117,6 @@ interface HistoryTargetFile {
   alt: string | null;
 }
 
-const historyMediaFrameStyle = {
-  width: 140,
-  height: 96,
-  borderRadius: 12,
-  overflow: "hidden",
-  background: "var(--p-color-bg-surface-secondary)",
-  border: "1px solid var(--p-color-border-secondary)",
-} as const;
-
 function isHistoryTab(value: string | null): value is HistoryTab {
   return HISTORY_TABS.some((tab) => tab.id === value);
 }
@@ -144,57 +142,83 @@ function isPreviewableImage(log: FileHistoryLog) {
   );
 }
 
+function runId(id: string) {
+  return `Run ID: #${id.slice(-6)}`;
+}
+
+function accentTone(status: string) {
+  if (status === "completed" || status === "valid") return "success";
+  if (status === "failed" || status === "invalid") return "critical";
+  if (status === "cleared") return "neutral";
+  return "warning";
+}
+
+function StatusPill({ status }: { status: string }) {
+  const label = STATUS_LABELS[status] ?? status;
+
+  if (status === "completed" || status === "valid") {
+    return (
+      <Pill tone="completed" icon="check_circle">
+        {label}
+      </Pill>
+    );
+  }
+
+  if (status === "failed" || status === "invalid") {
+    return <Pill tone="failed">{label}</Pill>;
+  }
+
+  if (status === "cleared") {
+    return <Pill tone="neutral">{label}</Pill>;
+  }
+
+  if (status === "completed_with_errors") {
+    return <Pill tone="running">{label}</Pill>;
+  }
+
+  return (
+    <Pill tone="running" dot="warning">
+      {label}
+    </Pill>
+  );
+}
+
+function LogStatusPill({ status }: { status: string }) {
+  const label = STATUS_LABELS[status] ?? status;
+
+  if (status === "created") {
+    return <Pill tone="ready">{label}</Pill>;
+  }
+
+  if (status === "failed" || status === "conflict") {
+    return <Pill tone="failed">{label}</Pill>;
+  }
+
+  return <Pill tone="neutral">{label}</Pill>;
+}
+
 function FileHistoryPreview({ log }: { log: FileHistoryLog }) {
   if (!log.sourceUrl) {
     return (
-      <Box
-        padding="200"
-        background="bg-surface-secondary"
-        borderRadius="200"
-      >
-        <Text as="span" variant="bodySm" tone="subdued">
-          No preview
-        </Text>
-      </Box>
+      <div className="em-table__preview">
+        <Icon name="description" />
+      </div>
     );
   }
 
   if (isPreviewableImage(log)) {
     return (
-      <div style={historyMediaFrameStyle}>
-        <img
-          src={log.sourceUrl}
-          alt={log.alt ?? log.identifier}
-          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-        />
-      </div>
-    );
-  }
-
-  if (log.contentType === "VIDEO") {
-    return (
-      <div style={historyMediaFrameStyle}>
-        <video
-          src={log.sourceUrl}
-          preload="metadata"
-          controls
-          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-        />
+      <div className="em-table__preview">
+        <img src={log.sourceUrl} alt={log.alt ?? log.identifier} />
       </div>
     );
   }
 
   return (
     <a href={log.sourceUrl} target="_blank" rel="noreferrer">
-      <Box
-        padding="300"
-        background="bg-surface-secondary"
-        borderRadius="200"
-      >
-        <Text as="span" variant="bodySm">
-          Open file
-        </Text>
-      </Box>
+      <div className="em-table__preview">
+        <Icon name={log.contentType === "VIDEO" ? "movie" : "description"} />
+      </div>
     </a>
   );
 }
@@ -206,6 +230,24 @@ function filenameFromUrl(url: string) {
   } catch {
     return null;
   }
+}
+
+/** Builds a CSV file in the browser and hands it to the merchant. */
+function downloadCsv(filename: string, rows: Array<Array<string | number>>) {
+  const csv = rows
+    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    .join("\r\n");
+  // Leading BOM so Excel opens the file as UTF-8.
+  const blob = new Blob(["﻿", csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 async function getTargetFilePreviewMap(admin: any) {
@@ -425,121 +467,105 @@ export async function loader({ request }: LoaderFunctionArgs) {
   };
 }
 
-function groupJobsByStore<T extends { sourceShop: string; targetShop: string }>(
-  jobs: T[],
-): Array<{ storeKey: string; sourceShop: string; targetShop: string; jobs: T[] }> {
-  const map = new Map<string, { sourceShop: string; targetShop: string; jobs: T[] }>();
-  for (const job of jobs) {
-    const key = `${job.sourceShop}::${job.targetShop}`;
-    if (!map.has(key)) {
-      map.set(key, { sourceShop: job.sourceShop, targetShop: job.targetShop, jobs: [] });
-    }
-    map.get(key)!.jobs.push(job);
-  }
-  return Array.from(map.entries()).map(([storeKey, group]) => ({ storeKey, ...group }));
-}
-
-function shortDomain(shop: string) {
-  return shop.replace(/\.myshopify\.com$/, "");
-}
-
-function StoreGroupHeader({
-  sourceShop,
-  targetShop,
-  jobCount,
-  expanded,
-  onToggle,
+function RunCount({
+  label,
+  value,
+  tone,
 }: {
-  sourceShop: string;
-  targetShop: string;
-  jobCount: number;
-  expanded: boolean;
-  onToggle: () => void;
+  label: string;
+  value: number;
+  tone?: "primary" | "critical";
 }) {
+  const showTone = tone === "critical" ? value > 0 : Boolean(tone);
+
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onToggle}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onToggle(); }}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        cursor: "pointer",
-        userSelect: "none",
-      }}
-    >
-      <span style={{
-        fontSize: 14,
-        transition: "transform 0.2s",
-        transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
-        color: "var(--p-color-text-secondary)",
-      }}>
-        ▶
-      </span>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
-        <div style={{
-          background: "var(--p-color-bg-fill-info)",
-          color: "var(--p-color-text-info-on-bg-fill)",
-          padding: "4px 10px",
-          borderRadius: 6,
-          fontSize: 13,
-          fontWeight: 600,
-        }}>
-          {shortDomain(sourceShop)}
-        </div>
-        <span style={{ fontSize: 16, color: "var(--p-color-text-secondary)" }}>→</span>
-        <div style={{
-          background: "var(--p-color-bg-fill-success)",
-          color: "var(--p-color-text-success-on-bg-fill)",
-          padding: "4px 10px",
-          borderRadius: 6,
-          fontSize: 13,
-          fontWeight: 600,
-        }}>
-          {shortDomain(targetShop)}
-        </div>
-      </div>
-      <Text as="span" variant="bodySm" tone="subdued">
-        {String(jobCount)} {jobCount === 1 ? "sync" : "syncs"}
-      </Text>
+    <div>
+      <p className="em-run__count-label">{label}</p>
+      <p
+        className={
+          showTone
+            ? `em-run__count-value em-run__count-value--${tone}`
+            : "em-run__count-value"
+        }
+      >
+        {value.toLocaleString()}
+      </p>
     </div>
   );
 }
 
-function JobRow({
-  job,
-  isSelected,
+function RunCard({
+  status,
+  store,
+  timestamp,
+  id,
+  counts,
+  errorMessage,
+  expanded,
   onToggle,
-  stats,
+  children,
 }: {
-  job: { id: string; status: string; createdAt: string };
-  isSelected: boolean;
+  status: string;
+  store: string;
+  timestamp: string;
+  id: string;
+  counts: ReactNode;
+  errorMessage?: string | null;
+  expanded: boolean;
   onToggle: () => void;
-  stats: ReactNode;
+  children?: ReactNode;
 }) {
+  const isRunning =
+    status === "syncing" || status === "scanning" || status === "pending";
+
   return (
-    <Box
-      padding="300"
-      borderRadius="200"
-      background={isSelected ? "bg-surface-selected" : "bg-surface-secondary"}
-    >
-      <BlockStack gap="200">
-        <InlineStack align="space-between" blockAlign="center">
-          <InlineStack gap="200" blockAlign="center">
-            <StatusBadge status={job.status} />
-            <Text as="span" variant="bodySm" tone="subdued">
-              {new Date(job.createdAt).toLocaleString()}
-            </Text>
-          </InlineStack>
-          <Button size="slim" onClick={onToggle}>
-            {isSelected ? "Collapse" : "Details"}
-          </Button>
-        </InlineStack>
-        <InlineStack gap="300">{stats}</InlineStack>
-      </BlockStack>
-    </Box>
+    <div className="em-run">
+      <div className={`em-run__accent em-run__accent--${accentTone(status)}`} />
+
+      <div className="em-run__head">
+        <div>
+          <div className="em-row-inline" style={{ marginBottom: 8 }}>
+            <StatusPill status={status} />
+            <span className="em-body-sm">{runId(id)}</span>
+          </div>
+          <h3 className="em-run__store">{store}</h3>
+          <p className="em-run__meta">{formatDateTime(timestamp)}</p>
+        </div>
+        <LinkButton onClick={onToggle} icon="expand_more">
+          {expanded ? "Hide Details" : "Details"}
+        </LinkButton>
+      </div>
+
+      {errorMessage ? (
+        <div className="em-error-box">
+          <Icon name="error" className="em-icon-lead" filled />
+          <div>
+            <p className="em-error-box__title">Migration failed</p>
+            <p className="em-error-box__code">{errorMessage}</p>
+            <p className="em-error-box__hint">
+              Check that the source token is still valid and has permission to
+              read this data, then run the migration again.
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      <div
+        className={
+          errorMessage ? "em-run__counts em-run__counts--dim" : "em-run__counts"
+        }
+      >
+        {counts}
+      </div>
+
+      {isRunning ? (
+        <div className="em-progress">
+          <div className="em-progress__fill em-progress__fill--indeterminate" />
+        </div>
+      ) : null}
+
+      {expanded && children ? children : null}
+    </div>
   );
 }
 
@@ -569,543 +595,499 @@ export default function HistoryPage() {
   };
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [logsPage, setLogsPage] = useState(1);
-  const fileDetailsRef = useRef<HTMLDivElement | null>(null);
-  const definitionDetailsRef = useRef<HTMLDivElement | null>(null);
+  const [visibleLogCount, setVisibleLogCount] = useState(LOGS_PER_STEP);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [rangeFilter, setRangeFilter] = useState("all");
+  const detailsRef = useRef<HTMLDivElement | null>(null);
 
-  const selectedTabIndex = Math.max(
-    0,
-    HISTORY_TABS.findIndex((item) => item.id === tab),
-  );
-
-  const paginatedDefinitionLogs = definitionLogs.slice(
-    (logsPage - 1) * 10,
-    logsPage * 10,
-  );
-  const paginatedFileLogs = fileLogs.slice((logsPage - 1) * 10, logsPage * 10);
-  const totalDefinitionLogPages = Math.max(
-    1,
-    Math.ceil(definitionLogs.length / 10),
-  );
-  const totalFileLogPages = Math.max(1, Math.ceil(fileLogs.length / 10));
-
-  const expandedDefinitionJob = jobId
-    ? definitionJobs.find((job) => job.id === jobId)
-    : null;
-  const expandedFileJob = jobId ? fileJobs.find((job) => job.id === jobId) : null;
-
-  const groupedFileJobs = groupJobsByStore(fileJobs);
-  const groupedDefinitionJobs = groupJobsByStore(definitionJobs);
-  const allGroups = tab === "files" ? groupedFileJobs : groupedDefinitionJobs;
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
-    () => new Set(allGroups.slice(1).map((g) => g.storeKey)),
-  );
-
-  function toggleGroup(storeKey: string) {
-    setCollapsedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(storeKey)) {
-        next.delete(storeKey);
-      } else {
-        next.add(storeKey);
-      }
-      return next;
-    });
-  }
-
-  useEffect(() => {
-    if (!searchParams.get("jobId")) {
-      return;
+  function matchesFilters(record: { status: string; createdAt: string }) {
+    if (statusFilter !== "all" && record.status !== statusFilter) {
+      return false;
     }
 
-    const targetRef =
-      tab === "files" ? fileDetailsRef : tab === "connections" ? null : definitionDetailsRef;
+    if (rangeFilter === "all") {
+      return true;
+    }
 
-    if (!targetRef?.current) {
+    const days = Number(rangeFilter);
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    return new Date(record.createdAt).getTime() >= cutoff;
+  }
+
+  const visibleFileJobs = fileJobs.filter(matchesFilters);
+  const visibleDefinitionJobs = definitionJobs.filter(matchesFilters);
+  const visibleConnectionEvents = connectionEvents.filter(matchesFilters);
+  const shownFileLogs = fileLogs.slice(0, visibleLogCount);
+  const shownDefinitionLogs = definitionLogs.slice(0, visibleLogCount);
+
+  useEffect(() => {
+    setVisibleLogCount(LOGS_PER_STEP);
+  }, [jobId, tab]);
+
+  useEffect(() => {
+    if (!searchParams.get("jobId") || !detailsRef.current) {
       return;
     }
 
     window.setTimeout(() => {
-      targetRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
+      detailsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 150);
-  }, [searchParams, tab, expandedFileJob, expandedDefinitionJob]);
+  }, [searchParams]);
 
-  function navigateToTab(nextTab: HistoryTab) {
-    navigate(`/app/history?tab=${nextTab}`);
+  function toggleJob(id: string) {
+    const base = `/app/history?tab=${tab}&page=${String(page)}`;
+    navigate(id === jobId ? base : `${base}&jobId=${id}`);
   }
 
-  function renderPagination(baseTab: HistoryTab) {
+  const statusOptions =
+    tab === "connections"
+      ? [
+          { label: "Any Status", value: "all" },
+          { label: "Connected", value: "valid" },
+          { label: "Token invalid", value: "invalid" },
+          { label: "Session cleared", value: "cleared" },
+        ]
+      : [
+          { label: "Any Status", value: "all" },
+          { label: "Completed", value: "completed" },
+          { label: "Completed with errors", value: "completed_with_errors" },
+          { label: "Failed", value: "failed" },
+        ];
+
+  function renderPagination() {
     if (totalPages <= 1) {
       return null;
     }
 
     return (
-      <>
-        <Divider />
-        <InlineStack align="space-between" blockAlign="center">
-          <Text as="span" variant="bodySm" tone="subdued">
-            Page {String(page)} of {String(totalPages)}
-          </Text>
-          <InlineStack gap="200">
-            <Button
-              size="slim"
-              onClick={() =>
-                navigate(
-                  `/app/history?tab=${baseTab}&page=${String(Math.max(1, page - 1))}`,
-                )
-              }
-              disabled={page <= 1}
-            >
-              Previous
-            </Button>
-            <Button
-              size="slim"
-              onClick={() =>
-                navigate(
-                  `/app/history?tab=${baseTab}&page=${String(
-                    Math.min(totalPages, page + 1),
-                  )}`,
-                )
-              }
-              disabled={page >= totalPages}
-            >
-              Next
-            </Button>
-          </InlineStack>
-        </InlineStack>
-      </>
-    );
-  }
-
-  function renderLogsPagination(totalLogPages: number) {
-    if (totalLogPages <= 1) return null;
-    return (
-      <InlineStack align="space-between" blockAlign="center">
-        <Text as="span" variant="bodySm" tone="subdued">
-          Page {String(logsPage)} of {String(totalLogPages)}
-        </Text>
-        <InlineStack gap="200">
+      <div className="em-row-between">
+        <span className="em-body-sm">
+          {`Page ${String(page)} of ${String(totalPages)}`}
+        </span>
+        <div className="em-row-inline">
           <Button
-            size="slim"
-            onClick={() => setLogsPage((c) => Math.max(1, c - 1))}
-            disabled={logsPage === 1}
+            size="sm"
+            onClick={() =>
+              navigate(
+                `/app/history?tab=${tab}&page=${String(Math.max(1, page - 1))}`,
+              )
+            }
+            disabled={page <= 1}
           >
             Previous
           </Button>
           <Button
-            size="slim"
-            onClick={() => setLogsPage((c) => Math.min(totalLogPages, c + 1))}
-            disabled={logsPage === totalLogPages}
+            size="sm"
+            onClick={() =>
+              navigate(
+                `/app/history?tab=${tab}&page=${String(
+                  Math.min(totalPages, page + 1),
+                )}`,
+              )
+            }
+            disabled={page >= totalPages}
           >
             Next
           </Button>
-        </InlineStack>
-      </InlineStack>
+        </div>
+      </div>
+    );
+  }
+
+  function renderLoadMore(shown: number, totalLogs: number) {
+    if (totalLogs === 0) {
+      return null;
+    }
+
+    return (
+      <div className="em-center" style={{ padding: 12 }}>
+        {shown < totalLogs ? (
+          <Button
+            size="sm"
+            onClick={() => setVisibleLogCount((current) => current + LOGS_PER_STEP)}
+          >
+            Load more
+          </Button>
+        ) : null}
+        <span className="em-body-sm">
+          {`Showing ${String(shown)} of ${String(totalLogs)}`}
+        </span>
+      </div>
+    );
+  }
+
+  function renderEmptyState() {
+    return (
+      <div className="em-card">
+        <EmptyState
+          icon="history"
+          title="No runs yet"
+          body={
+            tab === "connections"
+              ? "Connection events appear here once you connect a source store."
+              : "Your first migration will appear here."
+          }
+          action={
+            <Button
+              variant="primary"
+              icon={tab === "files" ? "sync_alt" : "dashboard"}
+              onClick={() => navigate(tab === "files" ? "/app/files" : "/app")}
+            >
+              {tab === "files" ? "Go to Files Migration" : "Go to Dashboard"}
+            </Button>
+          }
+        />
+      </div>
     );
   }
 
   return (
-    <Page
-      title="History"
-      subtitle={`${String(total)} records`}
-      backAction={{ onAction: () => navigate("/app") }}
-    >
-      <Layout>
-        <Layout.Section>
-          <Card>
-            <Tabs
-              tabs={HISTORY_TABS.map((item) => ({
-                id: item.id,
-                content: item.content,
-              }))}
-              selected={selectedTabIndex}
-              onSelect={(index) => navigateToTab(HISTORY_TABS[index].id)}
-            />
-          </Card>
-        </Layout.Section>
+    <div className="em-app">
+      <div className="em-page">
+        <header className="em-page-header">
+          <h2 className="em-page-title">History</h2>
+          <p className="em-page-subtitle">
+            Review past migration runs and details.
+          </p>
+        </header>
 
-        <Layout.Section>
-          <BlockStack gap="400">
-            {tab === "files" ? (
-              <>
-                {fileJobs.length === 0 ? (
-                  <Banner tone="info">
-                    <p>No file migration history yet.</p>
-                  </Banner>
-                ) : (
-                  groupedFileJobs.map((group) => (
-                    <Card key={group.storeKey}>
-                      <BlockStack gap="300">
-                        <StoreGroupHeader
-                          sourceShop={group.sourceShop}
-                          targetShop={group.targetShop}
-                          jobCount={group.jobs.length}
-                          expanded={!collapsedGroups.has(group.storeKey)}
-                          onToggle={() => toggleGroup(group.storeKey)}
+        <div className="em-tabs">
+          {HISTORY_TABS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={item.id === tab ? "em-tab em-tab--active" : "em-tab"}
+              onClick={() => navigate(`/app/history?tab=${item.id}`)}
+            >
+              {item.content}
+            </button>
+          ))}
+        </div>
+
+        <div className="em-row-inline">
+          <select
+            className="em-select"
+            style={{ width: "auto" }}
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+            aria-label="Filter by status"
+          >
+            {statusOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <select
+            className="em-select"
+            style={{ width: "auto" }}
+            value={rangeFilter}
+            onChange={(event) => setRangeFilter(event.target.value)}
+            aria-label="Filter by date range"
+          >
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="all">All time</option>
+          </select>
+          <span className="em-body-sm em-spacer">
+            {`${String(total)} ${tab === "connections" ? "events" : "runs"}`}
+          </span>
+        </div>
+
+        {/* ── Files history ── */}
+        {tab === "files" ? (
+          visibleFileJobs.length === 0 ? (
+            renderEmptyState()
+          ) : (
+            <div className="em-stack">
+              {visibleFileJobs.map((job) => (
+                <div key={job.id} ref={job.id === jobId ? detailsRef : undefined}>
+                  <RunCard
+                    status={job.status}
+                    store={job.sourceShop}
+                    timestamp={job.createdAt}
+                    id={job.id}
+                    errorMessage={job.errorMessage}
+                    expanded={job.id === jobId}
+                    onToggle={() => toggleJob(job.id)}
+                    counts={
+                      <>
+                        <RunCount label="Selected" value={job.totalSourceFiles} />
+                        <RunCount
+                          label="Created"
+                          value={job.createdCount}
+                          tone="primary"
                         />
-                        {!collapsedGroups.has(group.storeKey) && <>
-                        <Divider />
-                        {group.jobs.map((job) => (
-                          <JobRow
-                            key={job.id}
-                            job={job}
-                            isSelected={job.id === jobId}
-                            onToggle={() =>
-                              navigate(
-                                job.id === jobId
-                                  ? `/app/history?tab=files&page=${String(page)}`
-                                  : `/app/history?tab=files&page=${String(page)}&jobId=${job.id}`,
-                              )
+                        <RunCount label="Skipped" value={job.skippedCount} />
+                        <RunCount
+                          label="Failed"
+                          value={job.failedCount}
+                          tone="critical"
+                        />
+                      </>
+                    }
+                  >
+                    {fileLogs.length > 0 ? (
+                      <>
+                        <div className="em-row-between">
+                          <h4 className="em-section-heading">Files log</h4>
+                          <Button
+                            size="sm"
+                            icon="download"
+                            onClick={() =>
+                              downloadCsv(`easy-migrate-files-${job.id}.csv`, [
+                                ["Status", "Identifier", "Message", "Date & Time"],
+                                ...fileLogs.map((log) => [
+                                  STATUS_LABELS[log.status] ?? log.status,
+                                  log.identifier,
+                                  log.message,
+                                  formatDateTime(log.createdAt),
+                                ]),
+                              ])
                             }
-                            stats={
-                              <>
-                                <Text as="span" variant="bodySm" tone="subdued">
-                                  Created: {String(job.createdCount)}
-                                </Text>
-                                <Text as="span" variant="bodySm" tone="subdued">
-                                  Skipped: {String(job.skippedCount)}
-                                </Text>
-                                <Text as="span" variant="bodySm" tone="critical">
-                                  Failed: {String(job.failedCount)}
-                                </Text>
-                              </>
-                            }
-                          />
-                        ))}
-                        </>}
-                      </BlockStack>
-                    </Card>
-                  ))
-                )}
-                {fileJobs.length > 0 && renderPagination("files")}
-
-                {expandedFileJob ? (
-                  <div ref={fileDetailsRef}>
-                  <Card>
-                    <BlockStack gap="300">
-                      <Text as="h2" variant="headingMd">
-                        File migration details
-                      </Text>
-                      {expandedFileJob.errorMessage ? (
-                        <Banner tone="critical">
-                          <p>{expandedFileJob.errorMessage}</p>
-                        </Banner>
-                      ) : null}
-                      <SummaryTable
-                        rows={[
-                          ["Selected source files", expandedFileJob.totalSourceFiles],
-                          ["Created files", expandedFileJob.createdCount],
-                          ["Skipped files", expandedFileJob.skippedCount],
-                          ["Failed files", expandedFileJob.failedCount],
-                        ]}
-                      />
-                      {fileLogs.length > 0 ? (
-                        <>
-                          <Divider />
-                          <Text as="h3" variant="headingSm">
-                            File sync log
-                          </Text>
-                          <div
-                            style={{
-                              border: "1px solid var(--p-color-border-secondary)",
-                              borderRadius: 12,
-                              overflow: "hidden",
-                            }}
                           >
-                            <table
-                              style={{
-                                width: "100%",
-                                borderCollapse: "collapse",
-                                tableLayout: "fixed",
-                              }}
-                            >
-                              <thead>
-                                <tr
-                                  style={{
-                                    background:
-                                      "var(--p-color-bg-surface-secondary)",
-                                  }}
-                                >
-                                  <th style={{ padding: "12px 16px", textAlign: "left", width: 110 }}>
-                                    Status
-                                  </th>
-                                  <th style={{ padding: "12px 16px", textAlign: "left", width: 180 }}>
-                                    Preview
-                                  </th>
-                                  <th style={{ padding: "12px 16px", textAlign: "left", width: 240 }}>
-                                    Identifier
-                                  </th>
-                                  <th style={{ padding: "12px 16px", textAlign: "left" }}>
-                                    Message
-                                  </th>
-                                  <th style={{ padding: "12px 16px", textAlign: "left", width: 180 }}>
-                                    Date & Time
-                                  </th>
+                            Download CSV
+                          </Button>
+                        </div>
+                        <div className="em-table-wrap">
+                          <table className="em-table">
+                            <thead>
+                              <tr>
+                                <th scope="col">Status</th>
+                                <th scope="col">Preview</th>
+                                <th scope="col">Identifier</th>
+                                <th scope="col">Message</th>
+                                <th scope="col">Date &amp; Time</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {shownFileLogs.map((log) => (
+                                <tr key={log.id}>
+                                  <td>
+                                    <LogStatusPill status={log.status} />
+                                  </td>
+                                  <td>
+                                    <FileHistoryPreview log={log} />
+                                  </td>
+                                  <td className="em-table__id">{log.identifier}</td>
+                                  <td>{log.message}</td>
+                                  <td className="em-table__time">
+                                    {formatDateTime(log.createdAt)}
+                                  </td>
                                 </tr>
-                              </thead>
-                              <tbody>
-                                {paginatedFileLogs.map((log, index) => (
-                                  <tr key={log.id}>
-                                    <td
-                                      style={{
-                                        padding: "12px 16px",
-                                        verticalAlign: "top",
-                                        borderBottom:
-                                          index === paginatedFileLogs.length - 1
-                                            ? "none"
-                                            : "1px solid var(--p-color-border-secondary)",
-                                      }}
-                                    >
-                                      <StatusBadge status={log.status} />
-                                    </td>
-                                    <td
-                                      style={{
-                                        padding: "12px 16px",
-                                        verticalAlign: "top",
-                                        borderBottom:
-                                          index === paginatedFileLogs.length - 1
-                                            ? "none"
-                                            : "1px solid var(--p-color-border-secondary)",
-                                      }}
-                                    >
-                                      <FileHistoryPreview log={log} />
-                                    </td>
-                                    <td
-                                      style={{
-                                        padding: "12px 16px",
-                                        verticalAlign: "top",
-                                        borderBottom:
-                                          index === paginatedFileLogs.length - 1
-                                            ? "none"
-                                            : "1px solid var(--p-color-border-secondary)",
-                                        overflowWrap: "anywhere",
-                                      }}
-                                    >
-                                      {log.identifier}
-                                    </td>
-                                    <td
-                                      style={{
-                                        padding: "12px 16px",
-                                        verticalAlign: "top",
-                                        borderBottom:
-                                          index === paginatedFileLogs.length - 1
-                                            ? "none"
-                                            : "1px solid var(--p-color-border-secondary)",
-                                        overflowWrap: "anywhere",
-                                      }}
-                                    >
-                                      {log.message}
-                                    </td>
-                                    <td
-                                      style={{
-                                        padding: "12px 16px",
-                                        verticalAlign: "top",
-                                        borderBottom:
-                                          index === paginatedFileLogs.length - 1
-                                            ? "none"
-                                            : "1px solid var(--p-color-border-secondary)",
-                                      }}
-                                    >
-                                      {new Date(log.createdAt).toLocaleString()}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                          {renderLogsPagination(totalFileLogPages)}
-                        </>
-                      ) : null}
-                    </BlockStack>
-                  </Card>
-                  </div>
-                ) : null}
-              </>
-            ) : null}
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        {renderLoadMore(shownFileLogs.length, fileLogs.length)}
+                      </>
+                    ) : (
+                      <p className="em-body-sm">
+                        No per-file log entries were recorded for this run.
+                      </p>
+                    )}
+                  </RunCard>
+                </div>
+              ))}
+              {renderPagination()}
+            </div>
+          )
+        ) : null}
 
-            {tab === "metaobjects" || tab === "metafields" ? (
-              <>
-                {definitionJobs.length === 0 ? (
-                  <Banner tone="info">
-                    <p>
-                      No {tab === "metaobjects" ? "metaobject" : "metafield"} sync
-                      history yet.
-                    </p>
-                  </Banner>
-                ) : (
-                  groupedDefinitionJobs.map((group) => (
-                    <Card key={group.storeKey}>
-                      <BlockStack gap="300">
-                        <StoreGroupHeader
-                          sourceShop={group.sourceShop}
-                          targetShop={group.targetShop}
-                          jobCount={group.jobs.length}
-                          expanded={!collapsedGroups.has(group.storeKey)}
-                          onToggle={() => toggleGroup(group.storeKey)}
-                        />
-                        {!collapsedGroups.has(group.storeKey) && <>
-                        <Divider />
-                        {group.jobs.map((job) => (
-                          <JobRow
-                            key={job.id}
-                            job={job}
-                            isSelected={job.id === jobId}
-                            onToggle={() =>
-                              navigate(
-                                job.id === jobId
-                                  ? `/app/history?tab=${tab}&page=${String(page)}`
-                                  : `/app/history?tab=${tab}&page=${String(page)}&jobId=${job.id}`,
-                              )
-                            }
-                            stats={
-                              <>
-                                {tab === "metaobjects" ? (
-                                  <>
-                                    <Text as="span" variant="bodySm" tone="subdued">
-                                      Definitions: {String(job.createdMetaobjectDefinitions)}
-                                    </Text>
-                                    <Text as="span" variant="bodySm" tone="subdued">
-                                      Fields: {String(job.addedMetaobjectFields)}
-                                    </Text>
-                                    <Text as="span" variant="bodySm" tone="subdued">
-                                      Entries: {String(job.copiedMetaobjectEntries)}
-                                    </Text>
-                                  </>
-                                ) : (
-                                  <Text as="span" variant="bodySm" tone="subdued">
-                                    Created: {String(job.createdMetafieldDefinitions)}
-                                  </Text>
-                                )}
-                                <Text as="span" variant="bodySm" tone="critical">
-                                  Failed: {String(job.failedCount)}
-                                </Text>
-                              </>
-                            }
-                          />
-                        ))}
-                        </>}
-                      </BlockStack>
-                    </Card>
-                  ))
-                )}
-                {definitionJobs.length > 0 && renderPagination(tab)}
-
-                {expandedDefinitionJob ? (
-                  <div ref={definitionDetailsRef}>
-                  <Card>
-                    <BlockStack gap="300">
-                      <Text as="h2" variant="headingMd">
-                        {tab === "metaobjects"
-                          ? "Metaobject sync details"
-                          : "Metafield sync details"}
-                      </Text>
-                      {expandedDefinitionJob.errorMessage ? (
-                        <Banner tone="critical">
-                          <p>{expandedDefinitionJob.errorMessage}</p>
-                        </Banner>
-                      ) : null}
-                      {tab === "metaobjects" && expandedDefinitionJob.copiedMetaobjectEntries > 0 ? (
-                        <Banner tone="warning">
-                          <p>
-                            <strong>Reference fields not migrated:</strong> Metaobject fields of type{" "}
-                            <strong>product</strong>, <strong>collection</strong>,{" "}
-                            <strong>product variant</strong>, <strong>page</strong>, and{" "}
-                            <strong>URL</strong> cannot be automatically copied between stores. These
-                            fields have been left empty in the destination store and must be manually
-                            updated after migration.
-                          </p>
-                        </Banner>
-                      ) : null}
-                      <SummaryTable
-                        rows={
-                          tab === "metaobjects"
-                            ? [
-                                [
-                                  "Created metaobject definitions",
-                                  expandedDefinitionJob.createdMetaobjectDefinitions,
-                                ],
-                                [
-                                  "Added metaobject fields",
-                                  expandedDefinitionJob.addedMetaobjectFields,
-                                ],
-                                [
-                                  "Copied metaobject entries",
-                                  expandedDefinitionJob.copiedMetaobjectEntries,
-                                ],
-                                [
-                                  "Skipped metaobject entries",
-                                  expandedDefinitionJob.skippedMetaobjectEntries,
-                                ],
-                                ["Failures", expandedDefinitionJob.failedCount],
-                              ]
-                            : [
-                                [
-                                  "Created metafield definitions",
-                                  expandedDefinitionJob.createdMetafieldDefinitions,
-                                ],
-                                ["Warnings / conflicts", expandedDefinitionJob.conflictCount],
-                                ["Failures", expandedDefinitionJob.failedCount],
-                              ]
-                        }
-                      />
-                      {definitionLogs.length > 0 ? (
+        {/* ── Definition history ── */}
+        {tab === "metaobjects" || tab === "metafields" ? (
+          visibleDefinitionJobs.length === 0 ? (
+            renderEmptyState()
+          ) : (
+            <div className="em-stack">
+              {visibleDefinitionJobs.map((job) => (
+                <div key={job.id} ref={job.id === jobId ? detailsRef : undefined}>
+                  <RunCard
+                    status={job.status}
+                    store={job.sourceShop}
+                    timestamp={job.createdAt}
+                    id={job.id}
+                    errorMessage={job.errorMessage}
+                    expanded={job.id === jobId}
+                    onToggle={() => toggleJob(job.id)}
+                    counts={
+                      tab === "metaobjects" ? (
                         <>
-                          <Divider />
-                          <Text as="h3" variant="headingSm">
-                            {tab === "metaobjects" ? "Metaobject log" : "Metafield log"}
-                          </Text>
-                          <KeyValueTable
-                            headings={["Status", "Type", "Identifier", "Message", "Date & Time"]}
-                            rows={paginatedDefinitionLogs.map((log) => [
-                              <StatusBadge key={`${log.id}-status`} status={log.status} />,
-                              getDefinitionLogLabel(log.itemType),
-                              log.itemKey,
-                              log.message,
-                              new Date(log.createdAt).toLocaleString(),
-                            ])}
+                          <RunCount
+                            label="Definitions"
+                            value={job.createdMetaobjectDefinitions}
+                            tone="primary"
                           />
-                          {renderLogsPagination(totalDefinitionLogPages)}
+                          <RunCount
+                            label="Fields"
+                            value={job.addedMetaobjectFields}
+                          />
+                          <RunCount
+                            label="Entries"
+                            value={job.copiedMetaobjectEntries}
+                          />
+                          <RunCount
+                            label="Failed"
+                            value={job.failedCount}
+                            tone="critical"
+                          />
                         </>
-                      ) : null}
-                    </BlockStack>
-                  </Card>
-                  </div>
-                ) : null}
-              </>
-            ) : null}
+                      ) : (
+                        <>
+                          <RunCount
+                            label="Created"
+                            value={job.createdMetafieldDefinitions}
+                            tone="primary"
+                          />
+                          <RunCount label="Conflicts" value={job.conflictCount} />
+                          <RunCount
+                            label="Failed"
+                            value={job.failedCount}
+                            tone="critical"
+                          />
+                        </>
+                      )
+                    }
+                  >
+                    {tab === "metaobjects" && job.copiedMetaobjectEntries > 0 ? (
+                      <Banner tone="warning" title="Reference fields not migrated">
+                        Metaobject fields of type product, collection, product
+                        variant, page, and URL cannot be copied between stores.
+                        They are left empty in this store and must be set
+                        manually.
+                      </Banner>
+                    ) : null}
 
-            {tab === "connections" ? (
-              connectionEvents.length === 0 ? (
-                <Banner tone="info">
-                  <p>No store connection history yet.</p>
-                </Banner>
-              ) : (
-                <Card>
-                  <BlockStack gap="300">
-                    <Text as="h2" variant="headingMd">
-                      Store connection events
-                    </Text>
-                    <KeyValueTable
-                      headings={["Status", "Event", "Source store", "Message", "Date & Time"]}
-                      rows={connectionEvents.map((event) => [
-                        <StatusBadge key={`${event.id}-status`} status={event.status} />,
-                        event.event,
-                        event.sourceShop ?? "Not provided",
-                        event.message,
-                        new Date(event.createdAt).toLocaleString(),
-                      ])}
-                    />
-                    {renderPagination("connections")}
-                  </BlockStack>
-                </Card>
-              )
-            ) : null}
-          </BlockStack>
-        </Layout.Section>
-      </Layout>
-    </Page>
+                    {definitionLogs.length > 0 ? (
+                      <>
+                        <div className="em-row-between">
+                          <h4 className="em-section-heading">
+                            {tab === "metaobjects"
+                              ? "Metaobject log"
+                              : "Metafield log"}
+                          </h4>
+                          <Button
+                            size="sm"
+                            icon="download"
+                            onClick={() =>
+                              downloadCsv(`easy-migrate-${tab}-${job.id}.csv`, [
+                                [
+                                  "Status",
+                                  "Type",
+                                  "Identifier",
+                                  "Message",
+                                  "Date & Time",
+                                ],
+                                ...definitionLogs.map((log) => [
+                                  STATUS_LABELS[log.status] ?? log.status,
+                                  getDefinitionLogLabel(log.itemType),
+                                  log.itemKey,
+                                  log.message,
+                                  formatDateTime(log.createdAt),
+                                ]),
+                              ])
+                            }
+                          >
+                            Download CSV
+                          </Button>
+                        </div>
+                        <div className="em-table-wrap">
+                          <table className="em-table">
+                            <thead>
+                              <tr>
+                                <th scope="col">Status</th>
+                                <th scope="col">Type</th>
+                                <th scope="col">Identifier</th>
+                                <th scope="col">Message</th>
+                                <th scope="col">Date &amp; Time</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {shownDefinitionLogs.map((log) => (
+                                <tr key={log.id}>
+                                  <td>
+                                    <LogStatusPill status={log.status} />
+                                  </td>
+                                  <td>{getDefinitionLogLabel(log.itemType)}</td>
+                                  <td className="em-table__id">{log.itemKey}</td>
+                                  <td>{log.message}</td>
+                                  <td className="em-table__time">
+                                    {formatDateTime(log.createdAt)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        {renderLoadMore(
+                          shownDefinitionLogs.length,
+                          definitionLogs.length,
+                        )}
+                      </>
+                    ) : (
+                      <p className="em-body-sm">
+                        No log entries were recorded for this run.
+                      </p>
+                    )}
+                  </RunCard>
+                </div>
+              ))}
+              {renderPagination()}
+            </div>
+          )
+        ) : null}
+
+        {/* ── Store connection history ── */}
+        {tab === "connections" ? (
+          visibleConnectionEvents.length === 0 ? (
+            renderEmptyState()
+          ) : (
+            <div className="em-card">
+              <div className="em-card__body">
+                <h3 className="em-section-heading">Store connection events</h3>
+                <div className="em-table-wrap">
+                  <table className="em-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Status</th>
+                        <th scope="col">Event</th>
+                        <th scope="col">Source store</th>
+                        <th scope="col">Message</th>
+                        <th scope="col">Date &amp; Time</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleConnectionEvents.map((event) => (
+                        <tr key={event.id}>
+                          <td>
+                            <StatusPill status={event.status} />
+                          </td>
+                          <td>{event.event}</td>
+                          <td>
+                            {event.sourceShop ? (
+                              <code className="em-code-chip">
+                                {event.sourceShop}
+                              </code>
+                            ) : (
+                              "Not provided"
+                            )}
+                          </td>
+                          <td>{event.message}</td>
+                          <td className="em-table__time">
+                            {formatDateTime(event.createdAt)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {renderPagination()}
+              </div>
+            </div>
+          )
+        ) : null}
+      </div>
+    </div>
   );
 }

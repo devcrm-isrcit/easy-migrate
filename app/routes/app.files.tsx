@@ -1,29 +1,5 @@
-import {
-  Banner,
-  BlockStack,
-  Box,
-  Button,
-  Card,
-  Checkbox,
-  InlineGrid,
-  InlineStack,
-  Layout,
-  Link,
-  Page,
-  Select,
-  Spinner,
-  Text,
-  TextField,
-} from "@shopify/polaris";
 import { useAppBridge } from "@shopify/app-bridge-react";
-import {
-  useRef,
-  useEffect,
-  useState,
-  type CSSProperties,
-  type KeyboardEvent,
-  type MouseEvent,
-} from "react";
+import { useRef, useEffect, useState } from "react";
 import {
   useFetcher,
   useLoaderData,
@@ -32,13 +8,18 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 import {
-  StatusBadge,
-  SummaryTable,
-} from "../components/definition-sync";
+  Banner,
+  Button,
+  EmptyState,
+  Icon,
+  LinkButton,
+  Modal,
+  Pill,
+  StatGrid,
+  StatTile,
+} from "../components/easy-migrate-ui";
 import { fetchFileMigrationPreview, runFileMigration } from "../lib/file-sync.server";
-import {
-  readStoredSourceCredential,
-} from "../lib/source-credentials.client";
+import { readStoredSourceCredential } from "../lib/source-credentials.client";
 import { authenticate } from "../shopify.server";
 
 interface PreviewFile {
@@ -50,27 +31,24 @@ interface PreviewFile {
   alreadyInTarget?: boolean;
 }
 
-const mediaFrameStyle: CSSProperties = {
-  width: "100%",
-  aspectRatio: "1 / 1",
-  borderRadius: 12,
-  overflow: "hidden",
-  background: "var(--p-color-bg-surface-secondary)",
-  border: "1px solid var(--p-color-border-secondary)",
-};
+type TypeFilter = "all" | "image" | "video" | "other";
+type ScopeFilter = "transferable" | "everything";
 
-const stickyActionBarStyle: CSSProperties = {
-  position: "sticky",
-  top: 0,
-  zIndex: 20,
-  background: "var(--p-color-bg-surface)",
-  padding: "12px 0",
-};
-
-type FileFilter = "all" | "image" | "video" | "other" | "already_in_target";
 const PAGE_SIZE = 50;
 
-function getFileFilterType(file: PreviewFile): Exclude<FileFilter, "all"> {
+const CONTENT_TYPE_LABELS: Record<PreviewFile["contentType"], string> = {
+  IMAGE: "MediaImage",
+  VIDEO: "Video",
+  FILE: "GenericFile",
+};
+
+const LOG_STATUS_LABELS: Record<string, string> = {
+  created: "Created",
+  skipped: "Skipped",
+  failed: "Failed",
+};
+
+function getFileFilterType(file: PreviewFile): Exclude<TypeFilter, "all"> {
   if (file.contentType === "IMAGE") {
     return "image";
   }
@@ -165,51 +143,20 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 }
 
-function MediaPreview({ file }: { file: PreviewFile }) {
+function FileThumb({ file }: { file: PreviewFile }) {
+  const muted = Boolean(file.alreadyInTarget);
+
   if (file.contentType === "IMAGE") {
     return (
-      <div style={mediaFrameStyle}>
-        <img
-          src={file.sourceUrl}
-          alt={file.alt ?? file.filename ?? "Source image"}
-          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-        />
-      </div>
-    );
-  }
-
-  if (file.contentType === "VIDEO") {
-    return (
-      <div style={mediaFrameStyle}>
-        <video
-          src={file.sourceUrl}
-          controls
-          preload="metadata"
-          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
-        />
+      <div className={muted ? "em-thumb em-thumb--muted" : "em-thumb"}>
+        <img src={file.sourceUrl} alt={file.alt ?? file.filename ?? "Source file"} />
       </div>
     );
   }
 
   return (
-    <div
-      style={{
-        ...mediaFrameStyle,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 16,
-        textAlign: "center",
-      }}
-    >
-      <BlockStack gap="100">
-        <Text as="span" variant="headingMd">
-          FILE
-        </Text>
-        <Text as="span" variant="bodySm" tone="subdued">
-          No visual preview
-        </Text>
-      </BlockStack>
+    <div className={muted ? "em-thumb em-thumb--muted" : "em-thumb"}>
+      <Icon name={file.contentType === "VIDEO" ? "movie" : "description"} />
     </div>
   );
 }
@@ -267,22 +214,23 @@ export default function FileMigrationPage() {
   const [sourceShop, setSourceShop] = useState("");
   const [sourceToken, setSourceToken] = useState("");
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
-  const [activeFilter, setActiveFilter] = useState<FileFilter>("all");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>("transferable");
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [hasStoredCredential, setHasStoredCredential] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
+  const [previewFileFailed, setPreviewFileFailed] = useState(false);
   const isLoadingPreview = previewFetcher.state !== "idle";
   const isMigrating = migrationFetcher.state !== "idle";
   const logs = migrationData?.result?.logs ?? [];
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const filteredFiles = files.filter((file) => {
-    const matchesFilter =
-      activeFilter === "all"
-        ? true
-        : activeFilter === "already_in_target"
-          ? Boolean(file.alreadyInTarget)
-          : getFileFilterType(file) === activeFilter;
+    const matchesType =
+      typeFilter === "all" ? true : getFileFilterType(file) === typeFilter;
+    const matchesScope =
+      scopeFilter === "everything" ? true : !file.alreadyInTarget;
     const identifier = (file.filename ?? file.id).toLowerCase();
     const altText = (file.alt ?? "").toLowerCase();
     const matchesQuery =
@@ -290,21 +238,25 @@ export default function FileMigrationPage() {
       identifier.includes(normalizedQuery) ||
       altText.includes(normalizedQuery);
 
-    return matchesFilter && matchesQuery;
+    return matchesType && matchesScope && matchesQuery;
   });
   const totalPages = Math.max(1, Math.ceil(filteredFiles.length / PAGE_SIZE));
   const paginatedFiles = filteredFiles.slice(
     (currentPage - 1) * PAGE_SIZE,
     currentPage * PAGE_SIZE,
   );
+  const selectableVisibleFiles = paginatedFiles.filter(
+    (file) => !file.alreadyInTarget,
+  );
   const allVisibleSelected =
-    paginatedFiles.length > 0 &&
-    paginatedFiles.every((file) => selectedFileIds.includes(file.id));
+    selectableVisibleFiles.length > 0 &&
+    selectableVisibleFiles.every((file) => selectedFileIds.includes(file.id));
   const imageCount = files.filter((file) => getFileFilterType(file) === "image").length;
   const videoCount = files.filter((file) => getFileFilterType(file) === "video").length;
   const otherCount = files.filter((file) => getFileFilterType(file) === "other").length;
-  const alreadyInTargetCount = files.filter((file) => file.alreadyInTarget).length;
   const transferableCount = files.filter((file) => !file.alreadyInTarget).length;
+  const hasFilters =
+    normalizedQuery.length > 0 || typeFilter !== "all" || scopeFilter !== "everything";
 
   useEffect(() => {
     const storedCredential = readStoredSourceCredential(targetShop);
@@ -357,9 +309,7 @@ export default function FileMigrationPage() {
     }
 
     if (migrationData.ok) {
-      shopify.toast.show(
-        migrationData.message ?? "File migration completed.",
-      );
+      shopify.toast.show(migrationData.message ?? "File migration completed.");
       return;
     }
 
@@ -385,7 +335,7 @@ export default function FileMigrationPage() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [activeFilter, searchQuery, preview?.sourceShop]);
+  }, [typeFilter, scopeFilter, searchQuery, preview?.sourceShop]);
 
   useEffect(() => {
     if (currentPage > totalPages) {
@@ -412,337 +362,491 @@ export default function FileMigrationPage() {
 
   function toggleSelectAll() {
     if (allVisibleSelected) {
-      const visibleIds = new Set(paginatedFiles.map((file) => file.id));
+      const visibleIds = new Set(selectableVisibleFiles.map((file) => file.id));
       setSelectedFileIds((current) => current.filter((id) => !visibleIds.has(id)));
       return;
     }
 
     setSelectedFileIds((current) => {
       const next = new Set(current);
-      for (const file of paginatedFiles) {
+      for (const file of selectableVisibleFiles) {
         next.add(file.id);
       }
       return [...next];
     });
   }
 
+  function clearFilters() {
+    setSearchQuery("");
+    setTypeFilter("all");
+    setScopeFilter("everything");
+  }
+
   return (
-    <Page
-      title="Files Migration"
-      subtitle="Copy selected files and media from the connected source store."
-      backAction={{ onAction: () => navigate("/app") }}
-      fullWidth
-    >
-      <Layout>
-        <Layout.Section>
-          <BlockStack gap="400">
-            {isInitializing ? (
-              <Card>
-                <BlockStack gap="300" inlineAlign="center">
-                  <Spinner accessibilityLabel="Verifying source connection" size="large" />
-                  <Text as="p" tone="subdued" alignment="center">
-                    Verifying the saved source connection and loading the
-                    migration preview.
-                  </Text>
-                </BlockStack>
-              </Card>
-            ) : null}
+    <div className="em-app">
+      <div className="em-page">
+        <header className="em-page-header">
+          <h2 className="em-page-title">Files Migration</h2>
+          <p className="em-page-subtitle">
+            Select and manage files for migration to the target store.
+          </p>
+        </header>
 
-            {!hasStoredCredential && !isLoadingPreview ? (
-              <Banner tone="warning">
-                <p>
-                  Connect the source store on the homepage first. Files
-                  Migration uses the same browser session credentials.
-                </p>
-                <p>
-                  <Button onClick={() => navigate("/app")}>Go to homepage</Button>
-                </p>
-              </Banner>
-            ) : null}
+        {isInitializing ? (
+          <div className="em-card">
+            <div className="em-center">
+              <Icon name="progress_activity" size={32} className="em-spin" />
+              <span className="em-body-sm">
+                Verifying the saved source connection and loading the migration
+                preview.
+              </span>
+            </div>
+          </div>
+        ) : null}
 
-            {previewError ? (
-              <Banner tone="critical">
-                <p>{previewError}</p>
-              </Banner>
-            ) : null}
+        {!hasStoredCredential && !isLoadingPreview ? (
+          <div className="em-card">
+            <EmptyState
+              icon="link_off"
+              title="No source store connected"
+              body="Files Migration uses the same browser session as the dashboard. Connect a source store first."
+              action={
+                <Button
+                  variant="primary"
+                  icon="dashboard"
+                  onClick={() => navigate("/app")}
+                >
+                  Go to Dashboard
+                </Button>
+              }
+            />
+          </div>
+        ) : null}
 
-            {preview && !isInitializing ? (
-              <Card>
-                <BlockStack gap="400">
-                  <InlineStack align="space-between" blockAlign="center">
-                    <BlockStack gap="100">
-                      <Text as="h2" variant="headingMd">
-                        Migration preview
-                      </Text>
-                      <Text as="p" tone="subdued">
-                        Source store: {preview.sourceShop}
-                      </Text>
-                    </BlockStack>
-                  </InlineStack>
+        {previewError ? (
+          <Banner
+            tone="critical"
+            title="Couldn't reach the source store"
+            action={
+              <LinkButton onClick={() => navigate("/app")}>
+                Update connection
+              </LinkButton>
+            }
+          >
+            {previewError}
+          </Banner>
+        ) : null}
 
-                  <div style={stickyActionBarStyle}>
-                    <InlineStack align="end" blockAlign="center" gap="200">
-                      <Button
-                        onClick={toggleSelectAll}
-                        disabled={paginatedFiles.length === 0 || isMigrating}
-                      >
-                        {allVisibleSelected ? "Clear All" : "Select All"}
-                      </Button>
-                      <Button
-                        variant="primary"
-                        onClick={handleMigrate}
-                        loading={isMigrating}
-                        disabled={
-                          selectedFileIds.length === 0 ||
-                          !selectedFileIds.some((id) =>
-                            files.some((file) => file.id === id && !file.alreadyInTarget),
-                          )
-                        }
-                      >
-                        Migrate selected ({String(selectedFileIds.length)})
-                      </Button>
-                    </InlineStack>
+        {preview && !isInitializing ? (
+          <>
+            {/* ── Overview stat tiles ── */}
+            <StatGrid gap="md">
+              <StatTile
+                label="Total files"
+                value={preview.totalSourceFiles}
+                variant="bordered"
+              />
+              <StatTile
+                label="Transferable"
+                value={transferableCount}
+                variant="bordered"
+              />
+              <StatTile
+                label="Already in target"
+                value={preview.skippedExistingFiles}
+                variant="bordered"
+              />
+              <StatTile
+                label="Selected"
+                value={selectedFileIds.length}
+                variant="selected"
+              />
+            </StatGrid>
+
+            {/* ── Choose files ── */}
+            <div className="em-card em-card--flush">
+              <div className="em-list-toolbar">
+                <div className="em-list-toolbar__row">
+                  <div className="em-search" style={{ maxWidth: 300 }}>
+                    <Icon name="search" className="em-search__icon" />
+                    <input
+                      className="em-input"
+                      type="text"
+                      value={searchQuery}
+                      onChange={(event) => setSearchQuery(event.target.value)}
+                      placeholder="Search files..."
+                      aria-label="Search files"
+                    />
                   </div>
-
-                  <SummaryTable
-                    rows={[
-                      ["Total source files", preview.totalSourceFiles],
-                      ["Transferable files", transferableCount],
-                      ["Already in target", preview.skippedExistingFiles],
-                      ["Matching files", filteredFiles.length],
-                      ["Page", `${currentPage} / ${totalPages}`],
-                      ["Selected files", selectedFileIds.length],
-                    ]}
-                  />
-
-                  <InlineStack align="space-between" blockAlign="center">
-                    <Text as="p" tone="subdued">
-                      The page matches files by content type and filename. Only the selected items
-                      below will be copied.
-                    </Text>
-                  </InlineStack>
-
-                  <InlineStack gap="300" align="space-between" blockAlign="end">
-                    <div style={{ minWidth: 280, flex: "1 1 280px" }}>
-                      <TextField
-                        label="Search files"
-                        value={searchQuery}
-                        onChange={setSearchQuery}
-                        autoComplete="off"
-                        placeholder="Search by filename or alt text"
-                        clearButton
-                        onClearButtonClick={() => setSearchQuery("")}
-                      />
-                    </div>
-                    <div style={{ minWidth: 220 }}>
-                      <Select
-                        label="Filter"
-                        options={[
-                          { label: `All (${files.length})`, value: "all" },
-                          { label: `Images (${imageCount})`, value: "image" },
-                          { label: `Videos (${videoCount})`, value: "video" },
-                          { label: `Other (${otherCount})`, value: "other" },
-                          {
-                            label: `Already in target (${alreadyInTargetCount})`,
-                            value: "already_in_target",
-                          },
-                        ]}
-                        value={activeFilter}
-                        onChange={(value) => setActiveFilter(value as FileFilter)}
-                      />
-                    </div>
-                  </InlineStack>
-
-                  {paginatedFiles.length > 0 ? (
-                    <InlineGrid columns={{ xs: 1, sm: 2, md: 3, lg: 4, xl: 5 }} gap="300">
-                      {paginatedFiles.map((file) => {
-                        const checked = selectedFileIds.includes(file.id);
-                        const filterType = getFileFilterType(file);
-                        return (
-                          <div
-                            key={file.id}
-                            role="button"
-                            tabIndex={0}
-                            style={{ cursor: "pointer" }}
-                            onClick={() => toggleFileSelection(file.id)}
-                            onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
-                              if (event.key === "Enter" || event.key === " ") {
-                                event.preventDefault();
-                                toggleFileSelection(file.id);
-                              }
-                            }}
-                          >
-                            <Box
-                              padding="300"
-                              borderRadius="300"
-                              borderWidth="025"
-                              borderColor={checked ? "border-emphasis" : "border-secondary"}
-                              background={checked ? "bg-surface-selected" : "bg-surface"}
-                            >
-                              <BlockStack gap="200">
-                                <InlineStack align="space-between" blockAlign="start">
-                                  <InlineStack gap="100">
-                                    <StatusBadge status={checked ? "created" : "skipped"}>
-                                      {file.contentType}
-                                    </StatusBadge>
-                                    {file.alreadyInTarget ? (
-                                      <StatusBadge status="exists">
-                                        Already in target
-                                      </StatusBadge>
-                                    ) : null}
-                                  </InlineStack>
-                                  <span
-                                    onClick={(event: MouseEvent<HTMLSpanElement>) =>
-                                      event.stopPropagation()
-                                    }
-                                  >
-                                    <Checkbox
-                                      label=""
-                                      checked={checked}
-                                      onChange={() => toggleFileSelection(file.id)}
-                                    />
-                                  </span>
-                                </InlineStack>
-
-                                <MediaPreview file={file} />
-
-                                <BlockStack gap="100">
-                                  <Text as="p" variant="bodyMd" fontWeight="semibold">
-                                    {file.filename ?? file.id}
-                                  </Text>
-                                  {file.alt ? (
-                                    <Text as="p" variant="bodySm" tone="subdued">
-                                      {file.alt}
-                                    </Text>
-                                  ) : null}
-                                  {file.alreadyInTarget ? (
-                                    <Text as="p" variant="bodySm" tone="subdued">
-                                      This item already exists in the target store and will be skipped if selected.
-                                    </Text>
-                                  ) : null}
-                                  <span
-                                    onClick={(event: MouseEvent<HTMLSpanElement>) =>
-                                      event.stopPropagation()
-                                    }
-                                  >
-                                    <Link target="_blank" url={file.sourceUrl}>
-                                      Preview
-                                    </Link>
-                                  </span>
-                                </BlockStack>
-                              </BlockStack>
-                            </Box>
-                          </div>
-                        );
-                      })}
-                    </InlineGrid>
-                  ) : (
-                    <Banner tone={files.length > 0 ? "info" : "success"}>
-                      <p>
-                        {files.length > 0
-                          ? "No files match the current filter or search."
-                          : "No transferable files were found. The target already has all supported files."}
-                      </p>
-                    </Banner>
-                  )}
-
-                  {filteredFiles.length > 0 ? (
-                    <InlineStack align="space-between" blockAlign="center">
-                      <Text as="span" variant="bodySm" tone="subdued">
-                        Showing {String((currentPage - 1) * PAGE_SIZE + 1)}-
-                        {String(Math.min(currentPage * PAGE_SIZE, filteredFiles.length))} of{" "}
-                        {String(filteredFiles.length)}
-                      </Text>
-                      <InlineStack gap="200">
-                        <Button
-                          size="slim"
-                          onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-                          disabled={currentPage <= 1}
-                        >
-                          Previous
-                        </Button>
-                        <Button
-                          size="slim"
-                          onClick={() =>
-                            setCurrentPage((page) => Math.min(totalPages, page + 1))
-                          }
-                          disabled={currentPage >= totalPages}
-                        >
-                          Next
-                        </Button>
-                      </InlineStack>
-                    </InlineStack>
-                  ) : null}
-                </BlockStack>
-              </Card>
-            ) : null}
-
-            {migrationData ? (
-              <div ref={migrationResultRef}>
-                <Card>
-                <BlockStack gap="300">
-                  <Text as="h2" variant="headingMd">
-                    Migration result
-                  </Text>
-
-                  <Banner tone={migrationData.ok ? "success" : "critical"}>
-                    <p>{migrationData.ok ? migrationData.message : migrationData.error}</p>
-                  </Banner>
-
-                  {migrationData.result ? (
-                    <>
-                      <SummaryTable
-                        rows={[
-                          ["Selected source files", migrationData.result.totalSourceFiles],
-                          ["Created files", migrationData.result.createdCount],
-                          ["Skipped files", migrationData.result.skippedCount],
-                          ["Failed files", migrationData.result.failedCount],
-                        ]}
-                      />
-
-                      {logs.length > 0 ? (
-                        <div style={{ maxHeight: 420, overflow: "auto" }}>
-                          <table
-                            style={{
-                              width: "100%",
-                              borderCollapse: "collapse",
-                              tableLayout: "fixed",
-                            }}
-                          >
-                            <thead>
-                              <tr style={{ background: "var(--p-color-bg-surface-secondary)" }}>
-                                <th style={{ padding: "12px 16px", textAlign: "left" }}>Status</th>
-                                <th style={{ padding: "12px 16px", textAlign: "left" }}>Identifier</th>
-                                <th style={{ padding: "12px 16px", textAlign: "left" }}>Message</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {logs.map((log) => (
-                                <tr key={`${log.status}-${log.identifier}`}>
-                                  <td style={{ padding: "12px 16px", verticalAlign: "top" }}>
-                                    <StatusBadge status={log.status} />
-                                  </td>
-                                  <td style={{ padding: "12px 16px", verticalAlign: "top" }}>
-                                    {log.identifier}
-                                  </td>
-                                  <td style={{ padding: "12px 16px", verticalAlign: "top" }}>
-                                    {log.message}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : null}
-                    </>
-                  ) : null}
-                </BlockStack>
-                </Card>
+                  <div className="em-spacer" />
+                  <div className="em-select-wrap">
+                    <Icon name="filter_list" className="em-select-wrap__icon" />
+                    <select
+                      className="em-select"
+                      value={typeFilter}
+                      onChange={(event) =>
+                        setTypeFilter(event.target.value as TypeFilter)
+                      }
+                      aria-label="Filter by file type"
+                    >
+                      <option value="all">{`All types (${String(files.length)})`}</option>
+                      <option value="image">{`Images (${String(imageCount)})`}</option>
+                      <option value="video">{`Videos (${String(videoCount)})`}</option>
+                      <option value="other">{`Documents (${String(otherCount)})`}</option>
+                    </select>
+                  </div>
+                  <div className="em-select-wrap">
+                    <Icon name="tune" className="em-select-wrap__icon" />
+                    <select
+                      className="em-select"
+                      value={scopeFilter}
+                      onChange={(event) =>
+                        setScopeFilter(event.target.value as ScopeFilter)
+                      }
+                      aria-label="Filter by migration status"
+                    >
+                      <option value="transferable">Transferable only</option>
+                      <option value="everything">Everything</option>
+                    </select>
+                  </div>
+                </div>
               </div>
-            ) : null}
-          </BlockStack>
-        </Layout.Section>
-      </Layout>
-    </Page>
+
+              <div className="em-list-head em-grid-files">
+                <div className="em-cell-center">
+                  <input
+                    className="em-checkbox"
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={toggleSelectAll}
+                    disabled={selectableVisibleFiles.length === 0 || isMigrating}
+                    aria-label="Select every file on this page"
+                  />
+                </div>
+                <div>File Details</div>
+                <div className="em-cell-right">Type</div>
+                <div>Status</div>
+              </div>
+
+              <div className="em-list-scroll em-list-scroll--500">
+                {paginatedFiles.length > 0 ? (
+                  paginatedFiles.map((file) => {
+                    const checked = selectedFileIds.includes(file.id);
+                    const alreadyInTarget = Boolean(file.alreadyInTarget);
+
+                    return (
+                      <label
+                        key={file.id}
+                        className={[
+                          "em-list-row em-grid-files",
+                          checked ? "em-list-row--selected" : "",
+                          alreadyInTarget ? "em-list-row--disabled" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                      >
+                        <div className="em-cell-center">
+                          <input
+                            className="em-checkbox"
+                            type="checkbox"
+                            checked={checked}
+                            disabled={alreadyInTarget || isMigrating}
+                            onChange={() => toggleFileSelection(file.id)}
+                            aria-label={`Select ${file.filename ?? file.id}`}
+                          />
+                        </div>
+                        <div className="em-cell-file">
+                          <FileThumb file={file} />
+                          <div className="em-cell-stack">
+                            <span
+                              className={
+                                alreadyInTarget
+                                  ? "em-body em-truncate em-strike"
+                                  : "em-body em-strong em-truncate"
+                              }
+                            >
+                              {file.filename ?? file.id}
+                            </span>
+                            <span className="em-body-sm em-truncate">
+                              {file.alt ? `Alt: ${file.alt}` : "No alt text"}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="em-cell-right em-code" style={{ color: "var(--em-secondary)" }}>
+                          {CONTENT_TYPE_LABELS[file.contentType]}
+                        </div>
+                        <div className="em-row-inline">
+                          {alreadyInTarget ? (
+                            <Pill tone="neutral">Already in target</Pill>
+                          ) : (
+                            <Pill tone="ready">Ready</Pill>
+                          )}
+                          <button
+                            type="button"
+                            className="em-link-btn"
+                            onClick={(event) => {
+                              // The row is a <label>; keep this click off the checkbox.
+                              event.preventDefault();
+                              setPreviewFileFailed(false);
+                              setPreviewFile(file);
+                            }}
+                          >
+                            Preview
+                          </button>
+                        </div>
+                      </label>
+                    );
+                  })
+                ) : files.length === 0 || transferableCount === 0 ? (
+                  <EmptyState
+                    compact
+                    icon="check_circle"
+                    title="Nothing left to copy"
+                    body="The target store already has every supported file from the source store."
+                  />
+                ) : (
+                  <EmptyState
+                    compact
+                    icon="search_off"
+                    title="No files match your search"
+                    body="Try a different term, or clear the filters to see every file in the source store."
+                    action={
+                      hasFilters ? (
+                        <Button onClick={clearFilters}>Clear filters</Button>
+                      ) : undefined
+                    }
+                  />
+                )}
+              </div>
+
+              {filteredFiles.length > PAGE_SIZE ? (
+                <div
+                  className="em-row-between"
+                  style={{
+                    padding: "12px 20px",
+                    borderTop: "1px solid var(--em-border)",
+                  }}
+                >
+                  <span className="em-body-sm">
+                    {`Showing ${String((currentPage - 1) * PAGE_SIZE + 1)}–${String(
+                      Math.min(currentPage * PAGE_SIZE, filteredFiles.length),
+                    )} of ${String(filteredFiles.length)}`}
+                  </span>
+                  <div className="em-row-inline">
+                    <Button
+                      size="sm"
+                      onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                      disabled={currentPage <= 1}
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        setCurrentPage((page) => Math.min(totalPages, page + 1))
+                      }
+                      disabled={currentPage >= totalPages}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </>
+        ) : null}
+
+        {/* ── Migration result ── */}
+        {migrationData ? (
+          <div className="em-card" ref={migrationResultRef}>
+            <div className="em-card__body">
+              <h3 className="em-section-heading">Last migration result</h3>
+
+              <Banner
+                tone={migrationData.ok ? "success" : "critical"}
+                title={migrationData.ok ? "Migration completed" : "Migration failed"}
+              >
+                {migrationData.ok ? migrationData.message : migrationData.error}
+              </Banner>
+
+              {migrationData.result ? (
+                <>
+                  <StatGrid>
+                    <StatTile
+                      label="Selected"
+                      value={migrationData.result.totalSourceFiles}
+                    />
+                    <StatTile
+                      label="Created"
+                      value={migrationData.result.createdCount}
+                    />
+                    <StatTile
+                      label="Skipped"
+                      value={migrationData.result.skippedCount}
+                    />
+                    <StatTile
+                      label="Failed"
+                      value={migrationData.result.failedCount}
+                      tone="critical"
+                    />
+                  </StatGrid>
+
+                  {logs.length > 0 ? (
+                    <div className="em-table-wrap">
+                      <table className="em-table">
+                        <thead>
+                          <tr>
+                            <th scope="col">Status</th>
+                            <th scope="col">Identifier</th>
+                            <th scope="col">Message</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {logs.map((log) => (
+                            <tr key={`${log.status}-${log.identifier}`}>
+                              <td>
+                                <Pill
+                                  tone={
+                                    log.status === "created"
+                                      ? "ready"
+                                      : log.status === "failed"
+                                        ? "failed"
+                                        : "neutral"
+                                  }
+                                >
+                                  {LOG_STATUS_LABELS[log.status] ?? log.status}
+                                </Pill>
+                              </td>
+                              <td className="em-table__id">{log.identifier}</td>
+                              <td>{log.message}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {/* ── Sticky action bar ── */}
+        {preview && !isInitializing ? (
+          <div className="em-actionbar">
+            <div className="em-row-inline">
+              <span className="em-actionbar__label">
+                {`${String(selectedFileIds.length)} files selected`}
+              </span>
+              <LinkButton
+                tone="muted"
+                onClick={() => setSelectedFileIds([])}
+                disabled={selectedFileIds.length === 0}
+              >
+                Clear selection
+              </LinkButton>
+            </div>
+            <div className="em-row-inline">
+              <Button onClick={() => navigate("/app")}>Cancel</Button>
+              <Button
+                variant="primary"
+                icon="publish"
+                onClick={handleMigrate}
+                loading={isMigrating}
+                disabled={
+                  selectedFileIds.length === 0 ||
+                  !selectedFileIds.some((id) =>
+                    files.some((file) => file.id === id && !file.alreadyInTarget),
+                  )
+                }
+              >
+                {`Migrate ${String(selectedFileIds.length)} files`}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {/* ── File preview modal ── */}
+      {previewFile ? (
+        <Modal
+          title="File preview"
+          onClose={() => setPreviewFile(null)}
+          footer={
+            <>
+              <Button onClick={() => setPreviewFile(null)}>Close</Button>
+              {previewFile.alreadyInTarget ? null : (
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    toggleFileSelection(previewFile.id);
+                    setPreviewFile(null);
+                  }}
+                >
+                  {selectedFileIds.includes(previewFile.id)
+                    ? "Clear this file"
+                    : "Select this file"}
+                </Button>
+              )}
+            </>
+          }
+        >
+          <div
+            className={
+              previewFileFailed
+                ? "em-preview-panel em-preview-panel--message"
+                : "em-preview-panel"
+            }
+          >
+            {previewFileFailed ? (
+              <>
+                <Icon name="broken_image" size={32} />
+                <span className="em-body-sm">Failed to load file preview.</span>
+              </>
+            ) : previewFile.contentType === "IMAGE" ? (
+              <img
+                src={previewFile.sourceUrl}
+                alt={previewFile.alt ?? previewFile.filename ?? "Source file"}
+                onError={() => setPreviewFileFailed(true)}
+              />
+            ) : previewFile.contentType === "VIDEO" ? (
+              <video
+                src={previewFile.sourceUrl}
+                controls
+                preload="metadata"
+                onError={() => setPreviewFileFailed(true)}
+              >
+                {/* Source-store videos carry no caption track. */}
+                <track kind="captions" />
+              </video>
+            ) : (
+              <div className="em-preview-panel--message">
+                <Icon name="description" size={32} />
+                <span className="em-body-sm">
+                  No visual preview for this file type.
+                </span>
+              </div>
+            )}
+          </div>
+
+          <dl className="em-definition-list">
+            <dt>Filename</dt>
+            <dd>{previewFile.filename ?? previewFile.id}</dd>
+            <dt>Type</dt>
+            <dd>{CONTENT_TYPE_LABELS[previewFile.contentType]}</dd>
+            <dt>Alt text</dt>
+            <dd>{previewFile.alt ?? "Not set"}</dd>
+            <dt>Status</dt>
+            <dd>
+              {previewFile.alreadyInTarget ? "Already in target" : "Transferable"}
+            </dd>
+            <dt>Source URL</dt>
+            <dd>
+              <code className="em-code-chip">{previewFile.sourceUrl}</code>
+            </dd>
+          </dl>
+        </Modal>
+      ) : null}
+    </div>
   );
 }

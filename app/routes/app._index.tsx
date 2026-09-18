@@ -1,23 +1,4 @@
-import {
-  Badge,
-  Banner,
-  BlockStack,
-  Box,
-  Button,
-  Card,
-  Checkbox,
-  Divider,
-  FormLayout,
-  InlineStack,
-  Layout,
-  Page,
-  ProgressBar,
-  Select,
-  Spinner,
-  Text,
-  TextField,
-} from "@shopify/polaris";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useFetcher,
   useLoaderData,
@@ -25,10 +6,18 @@ import {
   type LoaderFunctionArgs,
 } from "react-router";
 import {
-  StatusBadge,
-  SummaryTable,
-  WarningsBanner,
-} from "../components/definition-sync";
+  Banner,
+  Button,
+  EmptyState,
+  Field,
+  Icon,
+  LinkButton,
+  Pill,
+  StatGrid,
+  StatTile,
+  StatusText,
+  formatDateTime,
+} from "../components/easy-migrate-ui";
 import {
   getLatestSyncJob,
 } from "../lib/definition-sync/logger.server";
@@ -42,34 +31,13 @@ import {
   normalizeShopDomain,
   validateShopDomain,
 } from "../lib/definition-sync/shop-domain.server";
-import {
-  SUPPORTED_METAFIELD_OWNER_TYPES,
-  type DefinitionScanPreview as ServerDefinitionScanPreview,
-} from "../lib/definition-sync/types.shared";
+import type { DefinitionScanPreview as ServerDefinitionScanPreview } from "../lib/definition-sync/types.shared";
 import {
   clearStoredSourceCredential,
   readStoredSourceCredential,
   writeStoredSourceCredential,
 } from "../lib/source-credentials.client";
 import { authenticate } from "../shopify.server";
-
-const stickyActionBarStyle: CSSProperties = {
-  position: "sticky",
-  top: 0,
-  zIndex: 20,
-  background: "var(--p-color-bg-surface)",
-  padding: "12px 0",
-};
-
-const selectableRowStyle: CSSProperties = {
-  cursor: "pointer",
-};
-
-const scrollPanelStyle: CSSProperties = {
-  maxHeight: "28rem",
-  overflowY: "auto",
-  paddingRight: "0.25rem",
-};
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
@@ -274,6 +242,15 @@ export async function action({ request }: ActionFunctionArgs) {
 
 type ScanPreview = ServerDefinitionScanPreview;
 
+const STATUS_LABELS: Record<string, string> = {
+  completed: "Completed",
+  completed_with_errors: "Completed with errors",
+  failed: "Failed",
+  pending: "Pending",
+  scanning: "Running",
+  syncing: "Running",
+};
+
 export default function DefinitionSyncDashboard() {
   const { adminAccessToken, shop, latestJob } = useLoaderData<typeof loader>();
 
@@ -301,6 +278,8 @@ export default function DefinitionSyncDashboard() {
     "all" | "metaobjects" | "metafields"
   >("all");
   const [metafieldOwnerFilter, setMetafieldOwnerFilter] = useState("all");
+  const [scannedAt, setScannedAt] = useState<string | null>(null);
+  const [showSourceToken, setShowSourceToken] = useState(false);
 
   useEffect(() => {
     const stored = readStoredSourceCredential(shop.myshopifyDomain);
@@ -356,6 +335,7 @@ export default function DefinitionSyncDashboard() {
     setSelectionQuery("");
     setSelectionView("all");
     setMetafieldOwnerFilter("all");
+    setScannedAt(preview ? new Date().toISOString() : null);
   }, [preview]);
 
   useEffect(() => {
@@ -412,7 +392,6 @@ export default function DefinitionSyncDashboard() {
   const missingMetaobjects = preview?.metaobjects.missing ?? [];
   const existingMetaobjects = preview?.metaobjects.existing ?? [];
   const missingMetafields = preview?.metafields.missing ?? [];
-  const ownerTypeStatus = preview?.ownerTypeStatus ?? [];
   const hasConnectionDraft = sourceShop.trim().length > 0 || sourceToken.trim().length > 0;
   const hasVerifiedConnection =
     sourceShop.trim().length > 0 &&
@@ -525,27 +504,6 @@ export default function DefinitionSyncDashboard() {
       .toLowerCase()
       .includes(normalizedSelectionQuery);
   });
-  const filteredMissingMetafieldsByOwnerType = filteredMissingMetafields.reduce<
-    Array<{
-      ownerType: string;
-      items: typeof filteredMissingMetafields;
-    }>
-  >((groups, item) => {
-    const existingGroup = groups.find(
-      (group) => group.ownerType === item.ownerType,
-    );
-
-    if (existingGroup) {
-      existingGroup.items.push(item);
-      return groups;
-    }
-
-    groups.push({
-      ownerType: item.ownerType,
-      items: [item],
-    });
-    return groups;
-  }, []);
   const visibleMetaobjectTypes = [
     ...filteredMissingMetaobjects.map((item) => item.type),
     ...(copyContent
@@ -555,38 +513,6 @@ export default function DefinitionSyncDashboard() {
   const visibleMetafieldIdentifiers = filteredMissingMetafields.map(
     (item) => `${item.ownerType}:${item.namespace}:${item.key}`,
   );
-  const visibleSelectedCount =
-    visibleMetaobjectTypes.filter((type) =>
-      selectedMetaobjectTypes.includes(type),
-    ).length +
-    visibleMetafieldIdentifiers.filter((id) =>
-      selectedMetafieldKeys.includes(id),
-    ).length;
-  const allVisibleSelected =
-    visibleMetaobjectTypes.length + visibleMetafieldIdentifiers.length > 0 &&
-    visibleSelectedCount ===
-      visibleMetaobjectTypes.length + visibleMetafieldIdentifiers.length;
-  const inaccessibleOwnerTypes = ownerTypeStatus.filter(
-    (item) => !item.sourceAccessible || !item.targetAccessible,
-  );
-  const missingOwnerTypes = ownerTypeStatus.filter(
-    (item) =>
-      item.sourceAccessible &&
-      item.targetAccessible &&
-      item.missingCount > 0,
-  );
-  const existingOnlyOwnerTypes = ownerTypeStatus.filter(
-    (item) =>
-      item.sourceAccessible &&
-      item.targetAccessible &&
-      item.missingCount === 0 &&
-      (item.existingCount > 0 || item.conflictCount > 0),
-  );
-  const untouchedOwnerTypes = SUPPORTED_METAFIELD_OWNER_TYPES.filter(
-    (ownerType) =>
-      !ownerTypeStatus.some((item) => item.ownerType === ownerType),
-  );
-
   const metafieldNameByIdentifier = new Map<string, string>();
   const metaobjectNameByType = new Map<string, string>();
   const metaobjectFieldNameByIdentifier = new Map<string, string>();
@@ -723,848 +649,866 @@ export default function DefinitionSyncDashboard() {
     });
   }
 
-  function toggleVisibleSelections() {
-    if (allVisibleSelected) {
-      setSelectedMetaobjectTypes((current) =>
-        current.filter((type) => !visibleMetaobjectTypes.includes(type)),
-      );
-      setSelectedMetafieldKeys((current) =>
-        current.filter((id) => !visibleMetafieldIdentifiers.includes(id)),
-      );
-      return;
-    }
-
-    setSelectedMetaobjectTypes((current) => [
-      ...new Set([...current, ...visibleMetaobjectTypes]),
-    ]);
-    setSelectedMetafieldKeys((current) => [
-      ...new Set([...current, ...visibleMetafieldIdentifiers]),
-    ]);
-  }
-
   if (!credentialsLoaded) {
     return (
-      <Page
-        title="Definition Sync"
-        subtitle={`${shop.name} (${shop.myshopifyDomain})`}
-      >
-        <Layout>
-          <Layout.Section>
-            <Card>
-              <BlockStack gap="300" inlineAlign="center">
-                <Spinner size="small" />
-                <Text as="p" tone="subdued" variant="bodySm">
-                  Loading…
-                </Text>
-              </BlockStack>
-            </Card>
-          </Layout.Section>
-        </Layout>
-      </Page>
+      <div className="em-app">
+        <div className="em-page">
+          <div className="em-card">
+            <div className="em-center">
+              <Icon name="progress_activity" size={32} className="em-spin" />
+              <span className="em-body-sm">Loading…</span>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 
+  const conflictingMetafields = preview?.metafields.conflicts ?? [];
+  const conflictingMetaobjects = preview?.metaobjects.conflicts ?? [];
+  const conflictKeys = new Set<string>([
+    ...conflictingMetafields.map(
+      (conflict) =>
+        `${conflict.source.ownerType}:${conflict.source.namespace}:${conflict.source.key}`,
+    ),
+  ]);
+  const conflictingMetaobjectTypes = new Set<string>(
+    conflictingMetaobjects.map((item) => item.type),
+  );
+  const totalConflicts =
+    (preview?.summary.conflictingMetafieldDefinitions ?? 0) +
+    (preview?.summary.conflictingMetaobjectFields ?? 0);
+  const visibleItemCount =
+    visibleMetaobjectTypes.length + visibleMetafieldIdentifiers.length;
+  const syncFailed = syncData?.intent === "sync" && !syncData.ok;
+  const syncSucceeded = syncData?.intent === "sync" && syncData.ok;
+
   return (
-    <Page
-      title="Definition Sync"
-      subtitle={`${shop.name} (${shop.myshopifyDomain})`}
-    >
-      <Layout>
-        {/* ── Connection Section ── */}
-        <Layout.AnnotatedSection
-          title="Admin token"
-          description="Reveal the installed shop's Admin API token from this app session. This uses the existing Easy Migrate installation and does not request extra scopes."
-        >
-          <Card>
-            <AdminTokenCard token={adminAccessToken} />
-          </Card>
-        </Layout.AnnotatedSection>
+    <div className="em-app">
+      <div className="em-page">
+        <header className="em-page-header">
+          <h2 className="em-page-title">
+            {preview ? "Scan Results" : "Definition Sync"}
+          </h2>
+          <p className="em-page-subtitle">
+            {preview
+              ? "Review missing definitions and select items to migrate to the destination store."
+              : "Copy metafield and metaobject definitions from another Shopify store."}
+          </p>
+        </header>
 
-        <Layout.AnnotatedSection
-          title="Source store"
-          description="Connect the source store you want to copy metafield and metaobject definitions from. Provide the .myshopify.com domain and a custom-app Admin API token."
-        >
-          <Card>
-            <BlockStack gap="400">
-              {sourceShop && sourceToken && !showConnectionForm ? (
-                <BlockStack gap="300">
-                  <InlineStack gap="200" blockAlign="center" align="space-between">
-                    <InlineStack gap="200" blockAlign="center">
-                      <Text as="span" variant="bodyMd" fontWeight="semibold">
-                        {sourceShop}
-                      </Text>
-                      <StatusBadge status={tokenStatus} />
-                    </InlineStack>
-                    <InlineStack gap="200">
-                      <Button
-                        size="slim"
-                        onClick={handleSave}
-                        loading={isSaving}
-                      >
-                        Re-sync
-                      </Button>
-                      <Button
-                        size="slim"
-                        tone="critical"
-                        onClick={handleRemove}
-                      >
-                        Clear session
-                      </Button>
-                    </InlineStack>
-                  </InlineStack>
-                  <Text as="p" tone="subdued" variant="bodySm">
-                    Source credentials are stored locally in this browser.
-                  </Text>
-                </BlockStack>
+        <div className="em-split">
+          {/* ── Main column ── */}
+          <div className="em-split__main">
+            {!hasVerifiedConnection ? (
+              isSaving ? (
+                <div className="em-card">
+                  <div className="em-center">
+                    <Icon name="progress_activity" size={32} className="em-spin" />
+                    <span className="em-body-sm">
+                      Verifying source store connection…
+                    </span>
+                  </div>
+                </div>
               ) : (
-                <BlockStack gap="300">
-                  {connectionData?.message ? (
-                    <Banner
-                      tone={connectionData.ok ? "success" : "critical"}
-                      onDismiss={() => {}}
-                    >
-                      <p>{connectionData.message}</p>
-                    </Banner>
-                  ) : null}
-
-                  {connectionData?.error && !connectionData.message ? (
-                    <Banner tone="critical">
-                      <p>{connectionData.error}</p>
-                    </Banner>
-                  ) : null}
-
-                  <form
-                    ref={connectionFormRef}
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      handleSave();
-                    }}
-                  >
-                    <BlockStack gap="300">
-                      <FormLayout>
-                        <TextField
-                          label="Source store domain"
-                          name="sourceShop"
-                          autoComplete="off"
-                          value={sourceShop.replace(/\.myshopify\.com$/i, "")}
-                          onChange={(val) =>
-                            setSourceShop(
-                              val.replace(/\.myshopify\.com$/i, ""),
-                            )
-                          }
-                          suffix=".myshopify.com"
-                          helpText="Enter store name only"
-                          error={connectionData?.fieldErrors?.sourceShop}
-                        />
-                        <TextField
-                          label="Source store Admin token"
-                          name="sourceToken"
-                          autoComplete="off"
-                          type="password"
-                          value={sourceToken}
-                          onChange={setSourceToken}
-                          helpText="Create a custom app in the source store and paste its Admin API token here."
-                          error={connectionData?.fieldErrors?.sourceToken}
-                        />
-                      </FormLayout>
-
-                      <InlineStack gap="200">
-                        <Button submit variant="primary" loading={isSaving}>
-                          {hasConnectionDraft ? "Update connection" : "Connect"}
-                        </Button>
-                        {sourceShop ? (
-                          <Button
-                            onClick={() => setShowConnectionForm(false)}
-                          >
-                            Cancel
-                          </Button>
-                        ) : null}
-                      </InlineStack>
-                    </BlockStack>
-                  </form>
-                </BlockStack>
-              )}
-            </BlockStack>
-          </Card>
-        </Layout.AnnotatedSection>
-
-        {/* ── Scan & Sync Section ── */}
-        {hasVerifiedConnection ? (
-          <Layout.Section>
-            <BlockStack gap="400">
-              <Card>
-                <BlockStack gap="400">
-                  <InlineStack align="space-between" blockAlign="center">
-                    <BlockStack gap="100">
-                      <Text as="h2" variant="headingMd">
-                        Scan definitions
-                      </Text>
-                      <Text as="p" tone="subdued" variant="bodySm">
-                        Compare metafield and metaobject definitions between source and target stores.
-                      </Text>
-                    </BlockStack>
-                    <Button
-                      variant="primary"
-                      loading={isScanning}
-                      onClick={handleScan}
-                      disabled={isSyncing}
-                    >
-                      {preview ? "Re-scan" : "Scan definitions"}
-                    </Button>
-                  </InlineStack>
-
-                  {isScanning ? (
-                    <BlockStack gap="200">
-                      <Text as="p" tone="subdued">
-                        Scanning metafield and metaobject definitions across both stores…
-                      </Text>
-                      <ProgressBar progress={75} size="small" tone="primary" />
-                    </BlockStack>
-                  ) : null}
-
-                  {scanError ? (
-                    <Banner tone="critical" title="Scan failed">
-                      <p>{scanError}</p>
-                    </Banner>
-                  ) : null}
-                </BlockStack>
-              </Card>
-
-              {preview ? (
                 <>
-                  <WarningsBanner warnings={preview.ownerTypeWarnings} />
+                  {hasConnectionDraft && tokenStatus === "invalid" ? (
+                    <Banner tone="critical" title="Source token was rejected">
+                      Check the domain and Admin API token in the source store
+                      card, then connect again.
+                    </Banner>
+                  ) : null}
+                  <div className="em-card">
+                    <EmptyState
+                      icon="link"
+                      title="Connect a source store to begin"
+                      body="To sync definitions, you first need to establish a connection with the source store by providing its domain and an admin API token."
+                      action={
+                        <a
+                          className="em-btn em-btn--secondary"
+                          href="https://help.shopify.com/en/manual/apps/app-types/custom-apps"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <Icon name="key" size={18} />
+                          How to create an Admin token
+                        </a>
+                      }
+                    />
+                  </div>
+                </>
+              )
+            ) : (
+              <>
+                {/* ── Scan control ── */}
+                <div className="em-card">
+                  <div className="em-card__body">
+                    <div className="em-row-between">
+                      <div>
+                        <h3 className="em-section-heading">Definition scan</h3>
+                        <p className="em-body-sm" style={{ marginTop: 4 }}>
+                          Compare the source store against this store to find
+                          missing definitions.
+                        </p>
+                      </div>
+                      <Button
+                        variant="primary"
+                        icon="search"
+                        onClick={handleScan}
+                        loading={isScanning}
+                        disabled={isSyncing}
+                      >
+                        {preview ? "Re-scan" : "Scan definitions"}
+                      </Button>
+                    </div>
 
-                  <Card>
-                    <BlockStack gap="300">
-                      <Text as="h2" variant="headingMd">
-                        Scan summary
-                      </Text>
-                      <SummaryTable
-                        rows={[
-                          [
-                            "Missing metafield definitions",
-                            preview.summary.missingMetafieldDefinitions,
-                          ],
-                          [
-                            "Missing metaobject definitions",
-                            preview.summary.missingMetaobjectDefinitions,
-                          ],
-                          [
-                            "Missing metaobject fields",
-                            preview.summary.missingMetaobjectFields,
-                          ],
-                          [
-                            "Conflicting metafield definitions",
-                            preview.summary.conflictingMetafieldDefinitions,
-                          ],
-                          [
-                            "Conflicting metaobject fields",
-                            preview.summary.conflictingMetaobjectFields,
-                          ],
-                        ]}
-                      />
-                    </BlockStack>
-                  </Card>
+                    {isScanning ? (
+                      <>
+                        <p className="em-body-sm">
+                          Reading definitions from the source store…
+                        </p>
+                        <div className="em-progress">
+                          <div className="em-progress__fill em-progress__fill--indeterminate" />
+                        </div>
+                        <div className="em-stat-grid">
+                          <div className="em-skeleton em-skeleton--tile" />
+                          <div className="em-skeleton em-skeleton--tile" />
+                          <div className="em-skeleton em-skeleton--tile" />
+                          <div className="em-skeleton em-skeleton--tile" />
+                        </div>
+                      </>
+                    ) : scanError ? (
+                      <Banner tone="critical" title="Scan failed">
+                        {scanError}
+                      </Banner>
+                    ) : !preview ? (
+                      <p className="em-body-sm">
+                        Scanning reads data only — nothing is copied until you
+                        choose.
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
 
-                  <Card>
-                    <BlockStack gap="300">
-                      <BlockStack gap="100">
-                        <Text as="h2" variant="headingMd">
-                          Metafield owner type status
-                        </Text>
-                        <Text as="p" tone="subdued" variant="bodySm">
-                          See which owner types have missing definitions, which
-                          are already covered, and which are blocked by access.
-                        </Text>
-                      </BlockStack>
+                {preview ? (
+                  <>
+                    {preview.ownerTypeWarnings.length > 0 ? (
+                      <Banner tone="warning" title="Scan warnings and limits">
+                        {preview.ownerTypeWarnings.join(" ")}
+                      </Banner>
+                    ) : null}
 
-                      <BlockStack gap="200">
-                        <Text as="h3" variant="headingSm">
-                          Missing in target ({String(missingOwnerTypes.length)})
-                        </Text>
-                        {missingOwnerTypes.length > 0 ? (
-                          <InlineStack gap="200" wrap>
-                            {missingOwnerTypes.map((item) => (
-                              <Badge key={item.ownerType} tone="attention">
-                                {`${item.ownerType} (${String(item.missingCount)})`}
-                              </Badge>
-                            ))}
-                          </InlineStack>
-                        ) : (
-                          <Text as="p" tone="subdued" variant="bodySm">
-                            No owner types with missing metafield definitions.
-                          </Text>
-                        )}
-                      </BlockStack>
+                    {/* ── Scan summary ── */}
+                    <div className="em-card">
+                      <div className="em-card__body">
+                        <h3 className="em-section-heading">Scan Summary</h3>
+                        <StatGrid>
+                          <StatTile
+                            label="Missing Metafields"
+                            value={preview.summary.missingMetafieldDefinitions}
+                          />
+                          <StatTile
+                            label="Missing Metaobjects"
+                            value={preview.summary.missingMetaobjectDefinitions}
+                          />
+                          <StatTile
+                            label="Fields"
+                            value={preview.summary.missingMetaobjectFields}
+                          />
+                          <StatTile
+                            label="Conflicts"
+                            value={totalConflicts}
+                            tone="critical"
+                          />
+                        </StatGrid>
+                        <div className="em-row-between">
+                          <span className="em-body-sm">
+                            {scannedAt
+                              ? `Scanned ${formatDateTime(scannedAt)}`
+                              : `Source store ${preview.sourceShop}`}
+                          </span>
+                          <Button
+                            size="sm"
+                            icon="refresh"
+                            onClick={handleScan}
+                            loading={isScanning}
+                            disabled={isSyncing}
+                          >
+                            Re-scan
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
 
-                      <Divider />
+                    {/* ── Conflicts ── */}
+                    {totalConflicts > 0 ? (
+                      <Banner
+                        tone="critical"
+                        title={`${String(totalConflicts)} Conflicts Detected`}
+                      >
+                        Some definitions exist on the destination store with
+                        different types or validations. Easy Migrate skips them
+                        so nothing is overwritten.
+                      </Banner>
+                    ) : null}
 
-                      <BlockStack gap="200">
-                        <Text as="h3" variant="headingSm">
-                          Already present / no missing defs (
-                          {String(existingOnlyOwnerTypes.length)})
-                        </Text>
-                        {existingOnlyOwnerTypes.length > 0 ? (
-                          <InlineStack gap="200" wrap>
-                            {existingOnlyOwnerTypes.map((item) => (
-                              <Badge key={item.ownerType} tone="success">
-                                {`${item.ownerType}${
-                                  item.existingCount > 0
-                                    ? ` (${String(item.existingCount)} existing)`
-                                    : ""
-                                }${
-                                  item.conflictCount > 0
-                                    ? ` (${String(item.conflictCount)} conflict)`
-                                    : ""
-                                }`}
-                              </Badge>
-                            ))}
-                          </InlineStack>
-                        ) : (
-                          <Text as="p" tone="subdued" variant="bodySm">
-                            No accessible owner types are fully matched yet.
-                          </Text>
-                        )}
-                      </BlockStack>
+                    {syncFailed ? (
+                      <Banner tone="critical" title="Sync failed">
+                        {syncData?.error}
+                      </Banner>
+                    ) : null}
 
-                      <Divider />
+                    {syncSucceeded ? (
+                      <Banner tone="success" title="Sync completed">
+                        {syncData?.message}
+                      </Banner>
+                    ) : null}
 
-                      <BlockStack gap="200">
-                        <Text as="h3" variant="headingSm">
-                          Inaccessible ({String(inaccessibleOwnerTypes.length)})
-                        </Text>
-                        {inaccessibleOwnerTypes.length > 0 ? (
-                          <InlineStack gap="200" wrap>
-                            {inaccessibleOwnerTypes.map((item) => (
-                              <Badge key={item.ownerType} tone="critical">
-                                {`${item.ownerType}${
-                                  !item.sourceAccessible && !item.targetAccessible
-                                    ? " (source + target)"
-                                    : !item.sourceAccessible
-                                      ? " (source)"
-                                      : " (target)"
-                                }`}
-                              </Badge>
-                            ))}
-                          </InlineStack>
-                        ) : (
-                          <Text as="p" tone="subdued" variant="bodySm">
-                            All scanned owner types were accessible.
-                          </Text>
-                        )}
-                      </BlockStack>
+                    {isSyncing ? (
+                      <Banner tone="info" title="Sync running">
+                        Keep this page open. Closing it stops the sync after the
+                        current item.
+                      </Banner>
+                    ) : null}
 
-                      {untouchedOwnerTypes.length > 0 ? (
-                        <>
-                          <Divider />
-                          <BlockStack gap="200">
-                            <Text as="h3" variant="headingSm">
-                              No defs found in either store
-                            </Text>
-                            <Text as="p" tone="subdued" variant="bodySm">
-                              {untouchedOwnerTypes.join(", ")}
-                            </Text>
-                          </BlockStack>
-                        </>
-                      ) : null}
-                    </BlockStack>
-                  </Card>
-
-                  {allSelectableCount > 0 ? (
-                    <Card>
-                      <BlockStack gap="400">
-                        <div style={stickyActionBarStyle}>
-                          <BlockStack gap="300">
-                            <InlineStack
-                              align="space-between"
-                              blockAlign="center"
+                    {/* ── Selection list ── */}
+                    {allSelectableCount > 0 ? (
+                      <div className="em-card em-card--flush em-list-card">
+                        <div className="em-list-toolbar">
+                          <div className="em-row-between">
+                            <h3 className="em-section-heading">
+                              Select what to copy
+                            </h3>
+                            <span className="em-label-caps">
+                              {`Showing ${String(visibleItemCount)} items`}
+                            </span>
+                          </div>
+                          <div className="em-list-toolbar__row">
+                            <div className="em-search">
+                              <Icon name="search" className="em-search__icon" />
+                              <input
+                                className="em-input"
+                                type="text"
+                                value={selectionQuery}
+                                onChange={(event) =>
+                                  setSelectionQuery(event.target.value)
+                                }
+                                placeholder="Search namespaces, keys..."
+                                aria-label="Search definitions"
+                              />
+                            </div>
+                            <select
+                              className="em-select"
+                              style={{ width: 170 }}
+                              value={selectionView}
+                              onChange={(event) =>
+                                setSelectionView(
+                                  event.target.value as
+                                    | "all"
+                                    | "metaobjects"
+                                    | "metafields",
+                                )
+                              }
+                              disabled={isSyncing}
+                              aria-label="Filter by definition type"
                             >
-                              <BlockStack gap="050">
-                                <Text as="h2" variant="headingMd">
-                                  Select definitions to sync
-                                </Text>
-                                <Text as="p" tone="subdued" variant="bodySm">
-                                  Selected {String(totalSelectedCount)} of{" "}
-                                  {String(allSelectableCount)} definitions
-                                </Text>
-                              </BlockStack>
-                              <InlineStack gap="200">
-                                <Button
-                                  onClick={toggleVisibleSelections}
-                                  disabled={
-                                    isSyncing ||
-                                    visibleMetaobjectTypes.length +
-                                      visibleMetafieldIdentifiers.length ===
-                                      0
-                                  }
-                                >
-                                  {allVisibleSelected
-                                    ? "Clear visible"
-                                    : "Select visible"}
-                                </Button>
-                                <Button
-                                  onClick={toggleSelectAll}
-                                  disabled={isSyncing}
-                                >
-                                  {allSelected ? "Clear all" : "Select all"}
-                                </Button>
-                                <Button
-                                  variant="primary"
-                                  onClick={handleSync}
-                                  loading={isSyncing}
-                                  disabled={isSaving || totalSelectedCount === 0}
-                                >
-                                  Sync selected ({String(totalSelectedCount)})
-                                </Button>
-                              </InlineStack>
-                            </InlineStack>
-
-                            <InlineStack gap="300" blockAlign="end" wrap>
-                              <div style={{ minWidth: "16rem", flex: "1 1 18rem" }}>
-                                <TextField
-                                  label="Search definitions"
-                                  autoComplete="off"
-                                  value={selectionQuery}
-                                  onChange={setSelectionQuery}
-                                  placeholder="Search by name, type, namespace, or key"
-                                  clearButton
-                                  onClearButtonClick={() => setSelectionQuery("")}
-                                />
-                              </div>
-                              <div style={{ minWidth: "14rem" }}>
-                                <Select
-                                  label="Show"
-                                  options={[
-                                    { label: "Everything", value: "all" },
-                                    { label: "Metaobjects only", value: "metaobjects" },
-                                    { label: "Metafields only", value: "metafields" },
-                                  ]}
-                                  value={selectionView}
-                                  onChange={(value) =>
-                                    setSelectionView(
-                                      value as "all" | "metaobjects" | "metafields",
-                                    )
-                                  }
-                                  disabled={isSyncing}
-                                />
-                              </div>
-                              <div style={{ minWidth: "16rem" }}>
-                                <Select
-                                  label="Metafield owner type"
-                                  options={metafieldOwnerOptions}
-                                  value={metafieldOwnerFilter}
-                                  onChange={setMetafieldOwnerFilter}
-                                  disabled={
-                                    isSyncing || selectionView === "metaobjects"
-                                  }
-                                />
-                              </div>
-                            </InlineStack>
-                          </BlockStack>
+                              <option value="all">Everything</option>
+                              <option value="metaobjects">Metaobjects only</option>
+                              <option value="metafields">Metafields only</option>
+                            </select>
+                            <select
+                              className="em-select"
+                              style={{ width: 190 }}
+                              value={metafieldOwnerFilter}
+                              onChange={(event) =>
+                                setMetafieldOwnerFilter(event.target.value)
+                              }
+                              disabled={isSyncing || selectionView === "metaobjects"}
+                              aria-label="Filter by metafield owner type"
+                            >
+                              {metafieldOwnerOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <label className="em-checkbox-label">
+                            <input
+                              className="em-checkbox"
+                              type="checkbox"
+                              checked={copyContent}
+                              onChange={(event) =>
+                                setCopyContent(event.target.checked)
+                              }
+                              disabled={isSyncing}
+                            />
+                            Copy metaobject entries (content and values)
+                          </label>
                         </div>
 
-                        <Checkbox
-                          label="Copy metaobject entries (content/values)"
-                          checked={copyContent}
-                          onChange={setCopyContent}
-                          helpText="Also copy all metaobject entries from the source store to the target store."
-                          disabled={isSyncing}
-                        />
-
-                        {syncData?.intent === "sync" ? (
-                          <Banner
-                            tone={syncData.ok ? "success" : "critical"}
-                          >
-                            <p>
-                              {syncData.ok
-                                ? syncData.message
-                                : syncData.error}
-                            </p>
-                          </Banner>
-                        ) : null}
-
-                        {isSyncing ? (
-                          <BlockStack gap="200">
-                            <Text as="p" tone="subdued">
-                              Syncing selected definitions…
-                            </Text>
-                            <ProgressBar
-                              progress={50}
-                              size="small"
-                              tone="primary"
+                        <div className="em-list-head em-grid-definitions">
+                          <div className="em-cell-center">
+                            <input
+                              className="em-checkbox"
+                              type="checkbox"
+                              checked={allSelected}
+                              onChange={toggleSelectAll}
+                              disabled={isSyncing}
+                              aria-label="Select every definition"
                             />
-                          </BlockStack>
-                        ) : null}
+                          </div>
+                          <div>Definition Name</div>
+                          <div style={{ textAlign: "center" }}>Owner</div>
+                          <div className="em-cell-right">Status</div>
+                        </div>
 
-                        {selectionView !== "metafields" &&
-                        missingMetaobjects.length > 0 ? (
-                          <BlockStack gap="200">
-                            <InlineStack
-                              align="space-between"
-                              blockAlign="center"
-                            >
-                              <Text as="h3" variant="headingSm">
-                                Missing metaobjects
-                              </Text>
-                              <Button
-                                size="slim"
-                                onClick={toggleMissingMetaobjectsSelectAll}
-                                disabled={isSyncing}
-                              >
-                                {allMissingMetaobjectsSelected
-                                  ? "Clear all"
-                                  : "Select all"}
-                              </Button>
-                            </InlineStack>
-                            <div style={scrollPanelStyle}>
-                              <BlockStack gap="200">
-                                {filteredMissingMetaobjects.map((item) => (
-                                  <Box
+                        <div className="em-list-scroll">
+                          {selectionView !== "metafields" &&
+                          filteredMissingMetaobjects.length > 0 ? (
+                            <>
+                              <div className="em-group-row">
+                                <span className="em-label-caps">
+                                  Metaobject definitions
+                                </span>
+                                <LinkButton
+                                  onClick={toggleMissingMetaobjectsSelectAll}
+                                  disabled={isSyncing}
+                                >
+                                  {allMissingMetaobjectsSelected
+                                    ? "Clear all"
+                                    : "Select all"}
+                                </LinkButton>
+                              </div>
+                              {filteredMissingMetaobjects.map((item) => {
+                                const checked = selectedMetaobjectTypes.includes(
+                                  item.type,
+                                );
+                                const isConflict = conflictingMetaobjectTypes.has(
+                                  item.type,
+                                );
+
+                                return (
+                                  <label
                                     key={item.type}
-                                    padding="200"
-                                    borderRadius="200"
-                                    background="bg-surface-secondary"
+                                    className={[
+                                      "em-list-row em-grid-definitions",
+                                      checked ? "em-list-row--selected" : "",
+                                      isConflict ? "em-list-row--conflict" : "",
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" ")}
                                   >
-                                    <div
-                                      onClick={() =>
-                                        toggleMetaobjectSelection(item.type)
-                                      }
-                                      style={selectableRowStyle}
-                                    >
-                                      <InlineStack
-                                        align="space-between"
-                                        blockAlign="center"
-                                      >
-                                        <BlockStack gap="050">
-                                          <Text
-                                            as="span"
-                                            variant="bodyMd"
-                                            fontWeight="semibold"
-                                          >
-                                            {item.name}
-                                          </Text>
-                                          <Text
-                                            as="span"
-                                            variant="bodySm"
-                                            tone="subdued"
-                                          >
-                                            Type: {item.type} ·{" "}
-                                            {item.fieldDefinitions.length} fields
-                                          </Text>
-                                        </BlockStack>
-                                        <div
-                                          onClick={(event) =>
-                                            event.stopPropagation()
-                                          }
-                                        >
-                                          <Checkbox
-                                            label=""
-                                            checked={selectedMetaobjectTypes.includes(
-                                              item.type,
-                                            )}
-                                            onChange={() =>
-                                              toggleMetaobjectSelection(item.type)
-                                            }
-                                          />
-                                        </div>
-                                      </InlineStack>
+                                    <div className="em-cell-center">
+                                      <input
+                                        className="em-checkbox"
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() =>
+                                          toggleMetaobjectSelection(item.type)
+                                        }
+                                        disabled={isSyncing}
+                                        aria-label={`Select ${item.name}`}
+                                      />
                                     </div>
-                                  </Box>
-                                ))}
-                              </BlockStack>
-                            </div>
-                          </BlockStack>
-                        ) : null}
+                                    <div className="em-cell-stack">
+                                      <span className="em-body em-strong em-truncate">
+                                        {item.name}
+                                      </span>
+                                      <span className="em-code em-truncate" style={{ color: "var(--em-secondary)" }}>
+                                        {item.type}
+                                      </span>
+                                    </div>
+                                    <div className="em-cell-center">
+                                      <Pill tone="outline">METAOBJECT</Pill>
+                                    </div>
+                                    <div className="em-cell-right">
+                                      <StatusText
+                                        tone={isConflict ? "critical" : "warning"}
+                                      >
+                                        {isConflict ? "Conflict" : "Missing"}
+                                      </StatusText>
+                                    </div>
+                                  </label>
+                                );
+                              })}
+                            </>
+                          ) : null}
 
-                        {selectionView !== "metafields" &&
-                        copyContent &&
-                        existingMetaobjects.length > 0 ? (
-                          <BlockStack gap="200">
-                            <InlineStack
-                              align="space-between"
-                              blockAlign="center"
-                            >
-                              <Text as="h3" variant="headingSm">
-                                Existing metaobjects (copy entries)
-                              </Text>
-                              <Button
-                                size="slim"
-                                onClick={toggleExistingMetaobjectsSelectAll}
-                                disabled={isSyncing}
-                              >
-                                {allExistingMetaobjectsSelected
-                                  ? "Clear all"
-                                  : "Select all"}
-                              </Button>
-                            </InlineStack>
-                            <div style={scrollPanelStyle}>
-                              <BlockStack gap="200">
-                                {filteredExistingMetaobjects.map((item) => (
-                                  <Box
+                          {selectionView !== "metafields" &&
+                          copyContent &&
+                          filteredExistingMetaobjects.length > 0 ? (
+                            <>
+                              <div className="em-group-row">
+                                <span className="em-label-caps">
+                                  Metaobject entries
+                                </span>
+                                <LinkButton
+                                  onClick={toggleExistingMetaobjectsSelectAll}
+                                  disabled={isSyncing}
+                                >
+                                  {allExistingMetaobjectsSelected
+                                    ? "Clear all"
+                                    : "Select all"}
+                                </LinkButton>
+                              </div>
+                              {filteredExistingMetaobjects.map((item) => {
+                                const checked = selectedMetaobjectTypes.includes(
+                                  item.source.type,
+                                );
+
+                                return (
+                                  <label
                                     key={item.source.type}
-                                    padding="200"
-                                    borderRadius="200"
-                                    background="bg-surface-secondary"
+                                    className={[
+                                      "em-list-row em-grid-definitions",
+                                      checked ? "em-list-row--selected" : "",
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" ")}
                                   >
-                                    <div
-                                      onClick={() =>
-                                        toggleMetaobjectSelection(
-                                          item.source.type,
-                                        )
-                                      }
-                                      style={selectableRowStyle}
-                                    >
-                                      <InlineStack
-                                        align="space-between"
-                                        blockAlign="center"
-                                      >
-                                        <BlockStack gap="050">
-                                          <Text
-                                            as="span"
-                                            variant="bodyMd"
-                                            fontWeight="semibold"
-                                          >
-                                            {item.source.name}
-                                          </Text>
-                                          <Text
-                                            as="span"
-                                            variant="bodySm"
-                                            tone="subdued"
-                                          >
-                                            Type: {item.source.type} · Definition
-                                            exists, entries will be copied
-                                          </Text>
-                                        </BlockStack>
-                                        <div
-                                          onClick={(event) =>
-                                            event.stopPropagation()
-                                          }
-                                        >
-                                          <Checkbox
-                                            label=""
-                                            checked={selectedMetaobjectTypes.includes(
-                                              item.source.type,
-                                            )}
-                                            onChange={() =>
-                                              toggleMetaobjectSelection(
-                                                item.source.type,
-                                              )
-                                            }
-                                          />
-                                        </div>
-                                      </InlineStack>
+                                    <div className="em-cell-center">
+                                      <input
+                                        className="em-checkbox"
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() =>
+                                          toggleMetaobjectSelection(
+                                            item.source.type,
+                                          )
+                                        }
+                                        disabled={isSyncing}
+                                        aria-label={`Select ${item.source.name}`}
+                                      />
                                     </div>
-                                  </Box>
-                                ))}
-                              </BlockStack>
-                            </div>
-                          </BlockStack>
-                        ) : null}
+                                    <div className="em-cell-stack">
+                                      <span className="em-body em-strong em-truncate">
+                                        {item.source.name}
+                                      </span>
+                                      <span className="em-code em-truncate" style={{ color: "var(--em-secondary)" }}>
+                                        {item.source.type}
+                                      </span>
+                                    </div>
+                                    <div className="em-cell-center">
+                                      <Pill tone="outline">ENTRIES</Pill>
+                                    </div>
+                                    <div className="em-cell-right">
+                                      <StatusText tone="secondary">
+                                        In target
+                                      </StatusText>
+                                    </div>
+                                  </label>
+                                );
+                              })}
+                            </>
+                          ) : null}
 
-                        {(missingMetaobjects.length > 0 || (copyContent && existingMetaobjects.length > 0)) &&
-                        missingMetafields.length > 0 ? (
-                          <Divider />
-                        ) : null}
+                          {selectionView !== "metaobjects" &&
+                          filteredMissingMetafields.length > 0 ? (
+                            <>
+                              <div className="em-group-row">
+                                <span className="em-label-caps">
+                                  Metafield definitions
+                                </span>
+                                <LinkButton
+                                  onClick={toggleMissingMetafieldsSelectAll}
+                                  disabled={isSyncing}
+                                >
+                                  {allMissingMetafieldsSelected
+                                    ? "Clear all"
+                                    : "Select all"}
+                                </LinkButton>
+                              </div>
+                              {filteredMissingMetafields.map((item) => {
+                                const identifier = `${item.ownerType}:${item.namespace}:${item.key}`;
+                                const checked =
+                                  selectedMetafieldKeys.includes(identifier);
+                                const isConflict = conflictKeys.has(identifier);
 
-                        {selectionView !== "metaobjects" &&
-                        missingMetafields.length > 0 ? (
-                          <BlockStack gap="200">
-                            <InlineStack
-                              align="space-between"
-                              blockAlign="center"
-                            >
-                              <Text as="h3" variant="headingSm">
-                                Missing metafields
-                              </Text>
-                              <Button
-                                size="slim"
-                                onClick={toggleMissingMetafieldsSelectAll}
-                                disabled={isSyncing}
-                              >
-                                {allMissingMetafieldsSelected
-                                  ? "Clear all"
-                                  : "Select all"}
-                              </Button>
-                            </InlineStack>
-                            <div style={scrollPanelStyle}>
-                              <BlockStack gap="200">
-                                {filteredMissingMetafieldsByOwnerType.map((group) => (
-                                  <BlockStack key={group.ownerType} gap="150">
-                                    <Text as="h4" variant="headingXs" tone="subdued">
-                                      {group.ownerType} ({group.items.length})
-                                    </Text>
-                                    {group.items.map((item) => {
-                                      const identifier = `${item.ownerType}:${item.namespace}:${item.key}`;
-                                      return (
-                                        <Box
-                                          key={identifier}
-                                          padding="200"
-                                          borderRadius="200"
-                                          background="bg-surface-secondary"
-                                        >
-                                          <div
-                                            onClick={() =>
-                                              toggleMetafieldSelection(identifier)
-                                            }
-                                            style={selectableRowStyle}
-                                          >
-                                            <InlineStack
-                                              align="space-between"
-                                              blockAlign="center"
-                                            >
-                                              <BlockStack gap="050">
-                                                <Text
-                                                  as="span"
-                                                  variant="bodyMd"
-                                                  fontWeight="semibold"
-                                                >
-                                                  {item.name}
-                                                </Text>
-                                                <Text
-                                                  as="span"
-                                                  variant="bodySm"
-                                                  tone="subdued"
-                                                >
-                                                  {item.namespace}.{item.key} ·{" "}
-                                                  {item.type}
-                                                </Text>
-                                              </BlockStack>
-                                              <div
-                                                onClick={(event) =>
-                                                  event.stopPropagation()
-                                                }
-                                              >
-                                                <Checkbox
-                                                  label=""
-                                                  checked={selectedMetafieldKeys.includes(
-                                                    identifier,
-                                                  )}
-                                                  onChange={() =>
-                                                    toggleMetafieldSelection(
-                                                      identifier,
-                                                    )
-                                                  }
-                                                />
-                                              </div>
-                                            </InlineStack>
-                                          </div>
-                                        </Box>
-                                      );
-                                    })}
-                                  </BlockStack>
-                                ))}
-                              </BlockStack>
-                            </div>
-                          </BlockStack>
-                        ) : null}
-                      </BlockStack>
-                    </Card>
-                  ) : (
-                    <Banner tone="success">
-                      <p>
-                        All metafield and metaobject definitions are already in
-                        sync between source and target stores.
-                      </p>
+                                return (
+                                  <label
+                                    key={identifier}
+                                    className={[
+                                      "em-list-row em-grid-definitions",
+                                      checked ? "em-list-row--selected" : "",
+                                      isConflict ? "em-list-row--conflict" : "",
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" ")}
+                                  >
+                                    <div className="em-cell-center">
+                                      <input
+                                        className="em-checkbox"
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() =>
+                                          toggleMetafieldSelection(identifier)
+                                        }
+                                        disabled={isSyncing}
+                                        aria-label={`Select ${item.name}`}
+                                      />
+                                    </div>
+                                    <div className="em-cell-stack">
+                                      <span className="em-body em-strong em-truncate">
+                                        {item.name}
+                                      </span>
+                                      <span className="em-code em-truncate" style={{ color: "var(--em-secondary)" }}>
+                                        {`${item.namespace}.${item.key}`}
+                                      </span>
+                                    </div>
+                                    <div className="em-cell-center">
+                                      <Pill tone="outline">{item.ownerType}</Pill>
+                                    </div>
+                                    <div className="em-cell-right">
+                                      <StatusText
+                                        tone={isConflict ? "critical" : "warning"}
+                                      >
+                                        {isConflict ? "Conflict" : "Missing"}
+                                      </StatusText>
+                                    </div>
+                                  </label>
+                                );
+                              })}
+                            </>
+                          ) : null}
+
+                          {visibleItemCount === 0 ? (
+                            <EmptyState
+                              compact
+                              icon="search_off"
+                              title="No definitions match your search"
+                              body="Try a different term, or clear the filters to see everything found in the scan."
+                              action={
+                                <Button
+                                  onClick={() => {
+                                    setSelectionQuery("");
+                                    setSelectionView("all");
+                                    setMetafieldOwnerFilter("all");
+                                  }}
+                                >
+                                  Clear filters
+                                </Button>
+                              }
+                            />
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : (
+                      <Banner tone="success" title="Everything is already in sync">
+                        All metafield and metaobject definitions from the source
+                        store already exist in this store.
+                      </Banner>
+                    )}
+                  </>
+                ) : null}
+              </>
+            )}
+
+            {/* ── Last sync result ── */}
+            {latestJob ? (
+              <div className="em-card" ref={latestSyncResultRef}>
+                <div className="em-card__body">
+                  <div className="em-row-between">
+                    <h3 className="em-section-heading">Last sync result</h3>
+                    <Pill
+                      tone={
+                        latestJob.status === "completed"
+                          ? "completed"
+                          : latestJob.status === "failed"
+                            ? "failed"
+                            : "running"
+                      }
+                      icon={
+                        latestJob.status === "completed" ? "check_circle" : undefined
+                      }
+                    >
+                      {STATUS_LABELS[latestJob.status] ?? latestJob.status}
+                    </Pill>
+                  </div>
+                  <p className="em-body-sm">
+                    {`${latestJob.sourceShop} → ${latestJob.targetShop} · ${formatDateTime(latestJob.createdAt)}`}
+                  </p>
+
+                  {latestJob.errorMessage ? (
+                    <Banner tone="critical" title="Sync failed">
+                      {latestJob.errorMessage}
                     </Banner>
-                  )}
-                </>
-              ) : null}
-            </BlockStack>
-          </Layout.Section>
-        ) : isSaving ? (
-          <Layout.Section>
-            <Card>
-              <BlockStack gap="300" inlineAlign="center">
-                <Spinner size="small" />
-                <Text as="p" tone="subdued" variant="bodySm">
-                  Verifying source store connection…
-                </Text>
-              </BlockStack>
-            </Card>
-          </Layout.Section>
-        ) : sourceShop || sourceToken ? (
-          <Layout.Section>
-            <Banner tone="warning">
-              <p>
-                Verify a valid source store token above before scanning
-                definitions or running a sync.
-              </p>
-            </Banner>
-          </Layout.Section>
-        ) : null}
+                  ) : null}
 
-        {/* ── Latest Sync Result ── */}
-        {latestJob ? (
-          <Layout.Section>
-            <div ref={latestSyncResultRef}>
-            <Card>
-              <BlockStack gap="400">
-                <InlineStack align="space-between" blockAlign="center">
-                  <Text as="h2" variant="headingMd">
-                    Latest sync result
-                  </Text>
-                  <Badge tone={latestJob.status === "completed" ? "success" : latestJob.status === "failed" ? "critical" : "attention"}>
-                    {latestJob.status}
-                  </Badge>
-                </InlineStack>
+                  {latestJob.copiedMetaobjectEntries > 0 ? (
+                    <Banner tone="warning" title="Reference fields not migrated">
+                      Metaobject fields of type product, collection, product
+                      variant, page, and URL cannot be copied between stores.
+                      They are left empty in this store and must be set manually.
+                    </Banner>
+                  ) : null}
 
-                <Text as="p" tone="subdued" variant="bodySm">
-                  {latestJob.sourceShop} → {latestJob.targetShop} ·{" "}
-                  {new Date(latestJob.createdAt).toLocaleString()}
-                </Text>
+                  <StatGrid columns={3}>
+                    <StatTile
+                      label="Metafield defs"
+                      value={latestJob.createdMetafieldDefinitions}
+                    />
+                    <StatTile
+                      label="Metaobject defs"
+                      value={latestJob.createdMetaobjectDefinitions}
+                    />
+                    <StatTile
+                      label="Fields added"
+                      value={latestJob.addedMetaobjectFields}
+                    />
+                    <StatTile
+                      label="Entries copied"
+                      value={latestJob.copiedMetaobjectEntries}
+                    />
+                    <StatTile
+                      label="Entries skipped"
+                      value={latestJob.skippedMetaobjectEntries}
+                    />
+                    <StatTile
+                      label="Failures"
+                      value={latestJob.failedCount}
+                      tone="critical"
+                    />
+                  </StatGrid>
 
-                {latestJob.errorMessage ? (
-                  <Banner tone="critical">
-                    <p>{latestJob.errorMessage}</p>
-                  </Banner>
-                ) : null}
+                  <div className="em-row-inline">
+                    <a
+                      className="em-btn em-btn--secondary em-btn--sm"
+                      href={`/app/history?tab=metaobjects&jobId=${latestJob.id}`}
+                    >
+                      <Icon name="description" size={18} />
+                      View full log
+                    </a>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
 
-                {latestJob.copiedMetaobjectEntries > 0 ? (
-                  <Banner tone="warning">
-                    <p>
-                      <strong>Reference fields not migrated:</strong> Metaobject fields of type{" "}
-                      <strong>product</strong>, <strong>collection</strong>,{" "}
-                      <strong>product variant</strong>, <strong>page</strong>, and{" "}
-                      <strong>URL</strong> cannot be automatically copied between stores. These
-                      fields have been left empty in the destination store and must be manually
-                      updated after migration.
-                    </p>
-                  </Banner>
-                ) : null}
+          {/* ── Aside ── */}
+          <aside className="em-split__aside">
+            <div className="em-card em-card--flush">
+              <div className="em-card__header">
+                <div>
+                  <h3 className="em-section-heading">Source store</h3>
+                  <p className="em-body-sm" style={{ marginTop: 4 }}>
+                    Origin of definitions
+                  </p>
+                </div>
+                <span
+                  className={
+                    tokenStatus === "valid"
+                      ? "em-badge em-badge--success"
+                      : tokenStatus === "invalid"
+                        ? "em-badge em-badge--critical"
+                        : "em-badge"
+                  }
+                >
+                  {tokenStatus === "valid"
+                    ? "Connected"
+                    : tokenStatus === "invalid"
+                      ? "Token invalid"
+                      : "Not connected"}
+                </span>
+              </div>
 
-                <SummaryTable
-                  rows={[
-                    [
-                      "Created metafield definitions",
-                      latestJob.createdMetafieldDefinitions,
-                    ],
-                    [
-                      "Created metaobject definitions",
-                      latestJob.createdMetaobjectDefinitions,
-                    ],
-                    [
-                      "Added metaobject fields",
-                      latestJob.addedMetaobjectFields,
-                    ],
-                    [
-                      "Copied metaobject entries",
-                      latestJob.copiedMetaobjectEntries,
-                    ],
-                    [
-                      "Skipped metaobject entries",
-                      latestJob.skippedMetaobjectEntries,
-                    ],
-                    ["Warnings / conflicts", latestJob.conflictCount],
-                    ["Failures", latestJob.failedCount],
-                  ]}
-                />
-              </BlockStack>
-            </Card>
+              {sourceShop && sourceToken && !showConnectionForm ? (
+                <div className="em-card__body">
+                  <div className="em-conn-tile">
+                    <span className="em-label-caps em-conn-tile__label">
+                      Source store
+                    </span>
+                    <div className="em-conn-tile__value">
+                      <Icon name="storefront" size={18} />
+                      <span>{sourceShop}</span>
+                    </div>
+                    <div
+                      className="em-conn-tile__status"
+                      style={{ color: "var(--em-success)" }}
+                    >
+                      <span className="em-dot em-dot--success" />
+                      Connected
+                    </div>
+                  </div>
+
+                  <div className="em-conn-arrow">
+                    <Icon name="arrow_downward" />
+                  </div>
+
+                  <div className="em-conn-tile">
+                    <span className="em-label-caps em-conn-tile__label">
+                      Destination store
+                    </span>
+                    <div className="em-conn-tile__value">
+                      <Icon name="storefront" size={18} />
+                      <span>{shop.myshopifyDomain}</span>
+                    </div>
+                    <div
+                      className="em-conn-tile__status"
+                      style={{ color: "var(--em-success)" }}
+                    >
+                      <span className="em-dot em-dot--success" />
+                      Connected
+                    </div>
+                  </div>
+
+                  <p className="em-body-sm">
+                    Source credentials are stored in this browser only.
+                  </p>
+
+                  <div className="em-row-inline">
+                    <Button
+                      size="sm"
+                      onClick={() => setShowConnectionForm(true)}
+                    >
+                      Update connection
+                    </Button>
+                    <Button size="sm" variant="critical" onClick={handleRemove}>
+                      Clear session
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <form
+                  ref={connectionFormRef}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    handleSave();
+                  }}
+                >
+                  <div className="em-card__body">
+                    {connectionData?.error ? (
+                      <Banner tone="critical" title="Couldn't connect">
+                        {connectionData.error}
+                      </Banner>
+                    ) : null}
+
+                    <Field
+                      label="Store domain"
+                      htmlFor="store-domain"
+                      help="Enter store name only — .myshopify.com is added for you."
+                      error={connectionData?.fieldErrors?.sourceShop}
+                    >
+                      <input
+                        id="store-domain"
+                        name="sourceShop"
+                        className={
+                          connectionData?.fieldErrors?.sourceShop
+                            ? "em-input em-input--code em-input--invalid"
+                            : "em-input em-input--code"
+                        }
+                        type="text"
+                        autoComplete="off"
+                        placeholder="example.myshopify.com"
+                        value={sourceShop.replace(/\.myshopify\.com$/i, "")}
+                        onChange={(event) =>
+                          setSourceShop(
+                            event.target.value.replace(/\.myshopify\.com$/i, ""),
+                          )
+                        }
+                      />
+                    </Field>
+
+                    <Field
+                      label="Admin API token"
+                      htmlFor="admin-token"
+                      help={
+                        <>
+                          Requires{" "}
+                          <code className="em-code-chip">
+                            read_metaobject_definitions
+                          </code>{" "}
+                          scope.
+                        </>
+                      }
+                      error={connectionData?.fieldErrors?.sourceToken}
+                    >
+                      <input
+                        id="admin-token"
+                        name="sourceToken"
+                        className={
+                          connectionData?.fieldErrors?.sourceToken
+                            ? "em-input em-input--code em-input--with-action em-input--invalid"
+                            : "em-input em-input--code em-input--with-action"
+                        }
+                        type={showSourceToken ? "text" : "password"}
+                        autoComplete="off"
+                        placeholder="shpat_..."
+                        value={sourceToken}
+                        onChange={(event) => setSourceToken(event.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="em-field__action"
+                        onClick={() => setShowSourceToken((current) => !current)}
+                        aria-label={
+                          showSourceToken ? "Hide token" : "Show token"
+                        }
+                      >
+                        <Icon
+                          name={showSourceToken ? "visibility_off" : "visibility"}
+                          size={18}
+                        />
+                      </button>
+                    </Field>
+                  </div>
+
+                  <div className="em-card__footer" style={{ borderTop: "none", paddingTop: 0 }}>
+                    {sourceShop && sourceToken ? (
+                      <Button onClick={() => setShowConnectionForm(false)}>
+                        Cancel
+                      </Button>
+                    ) : null}
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      loading={isSaving}
+                      fullWidth={!(sourceShop && sourceToken)}
+                    >
+                      Connect store
+                    </Button>
+                  </div>
+                </form>
+              )}
             </div>
-          </Layout.Section>
+
+            <AdminTokenCard token={adminAccessToken} />
+          </aside>
+        </div>
+
+        {/* ── Sticky action bar ── */}
+        {hasVerifiedConnection && preview && allSelectableCount > 0 ? (
+          <div className="em-actionbar">
+            <div className="em-row-inline">
+              <span className="em-actionbar__label">
+                {`${String(totalSelectedCount)} definitions selected`}
+              </span>
+              <span className="em-body-sm">
+                {`(from ${String(allSelectableCount)} total missing)`}
+              </span>
+            </div>
+            <div className="em-row-inline">
+              <LinkButton
+                tone="muted"
+                onClick={toggleSelectAll}
+                disabled={isSyncing || totalSelectedCount === 0}
+              >
+                Clear selection
+              </LinkButton>
+              <Button
+                variant="primary"
+                icon="sync"
+                onClick={handleSync}
+                loading={isSyncing}
+                disabled={isSaving || totalSelectedCount === 0}
+              >
+                {`Sync ${String(totalSelectedCount)} definitions`}
+              </Button>
+            </div>
+          </div>
         ) : null}
-      </Layout>
-    </Page>
+      </div>
+    </div>
   );
 }
 
@@ -1587,32 +1531,46 @@ function AdminTokenCard({ token }: { token?: string | null }) {
   }
 
   return (
-    <BlockStack gap="300">
-      <Text as="p" tone="subdued" variant="bodySm">
-        Use this token when this store needs to act as the source store in
-        another Easy Migrate session.
-      </Text>
-      <Box
-        background="bg-surface-secondary"
-        borderColor="border"
-        borderRadius="300"
-        borderWidth="025"
-        padding="300"
-      >
-        <Text as="p" variant="bodyMd" breakWord>
-          {isVisible
-            ? displayToken || "No token available for this session."
-            : "\u2022".repeat(Math.max(displayToken.length, 24))}
-        </Text>
-      </Box>
-      <InlineStack gap="200">
-        <Button onClick={() => setIsVisible((current) => !current)} disabled={!displayToken}>
-          {isVisible ? "Hide token" : "Reveal token"}
-        </Button>
-        <Button onClick={handleCopy} disabled={!displayToken}>
-          {copied ? "Copied" : "Copy token"}
-        </Button>
-      </InlineStack>
-    </BlockStack>
+    <div className="em-card em-card--flush">
+      <div className="em-card__header">
+        <div>
+          <h3 className="em-section-heading">Admin token</h3>
+          <p className="em-body-sm" style={{ marginTop: 4 }}>
+            This store, as a source
+          </p>
+        </div>
+      </div>
+      <div className="em-card__body">
+        <p className="em-body-sm">
+          Use this token when this store needs to act as the source store in
+          another Easy Migrate session.
+        </p>
+
+        {displayToken ? (
+          <>
+            <div className="em-conn-tile">
+              <span className="em-code" style={{ overflowWrap: "anywhere" }}>
+                {isVisible
+                  ? displayToken
+                  : `${displayToken.slice(0, 6)}${"•".repeat(12)}${displayToken.slice(-4)}`}
+              </span>
+            </div>
+            <div className="em-row-inline">
+              <LinkButton
+                onClick={() => setIsVisible((current) => !current)}
+                icon={isVisible ? "visibility_off" : "visibility"}
+              >
+                {isVisible ? "Hide token" : "Reveal token"}
+              </LinkButton>
+              <LinkButton onClick={handleCopy} icon="content_copy">
+                {copied ? "Copied" : "Copy token"}
+              </LinkButton>
+            </div>
+          </>
+        ) : (
+          <p className="em-body-sm">No token available for this session.</p>
+        )}
+      </div>
+    </div>
   );
 }

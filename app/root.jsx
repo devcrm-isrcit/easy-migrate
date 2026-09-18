@@ -1,25 +1,36 @@
 import { Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
-import polarisStyles from "@shopify/polaris/build/esm/styles.css?url";
+import easyMigrateStyles from "./styles/easy-migrate.css?url";
 
 export const links = () => [
   { rel: "preconnect", href: "https://cdn.shopify.com/" },
-  { rel: "preload", href: polarisStyles, as: "style" },
+  { rel: "preconnect", href: "https://fonts.googleapis.com" },
+  { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "" },
+  { rel: "preload", href: easyMigrateStyles, as: "style" },
   {
     rel: "stylesheet",
     href: "https://cdn.shopify.com/static/fonts/inter/v4/styles.css",
   },
-  { rel: "stylesheet", href: polarisStyles },
+  // Courier Prime and Material Symbols are part of the Easy Migrate design.
+  {
+    rel: "stylesheet",
+    href: "https://fonts.googleapis.com/css2?family=Courier+Prime&display=swap",
+  },
+  {
+    rel: "stylesheet",
+    href: "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+  },
+  { rel: "stylesheet", href: easyMigrateStyles },
 ];
 
 const criticalStyles = `
   html {
-    background: #f1f1f1;
+    background: #f8f9fb;
   }
 
   body {
     margin: 0;
-    background: #f1f1f1;
-    color: #303030;
+    background: #f8f9fb;
+    color: #1B2430;
     font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
 `;
