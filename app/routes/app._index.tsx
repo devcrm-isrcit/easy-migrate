@@ -159,6 +159,8 @@ export async function action({ request }: ActionFunctionArgs) {
         intent,
         message: "Sync completed successfully.",
         jobId: result.jobId,
+        failedCount: result.failedCount,
+        failures: result.failures,
       };
     } catch (error) {
       return {
@@ -350,7 +352,15 @@ export default function DefinitionSyncDashboard() {
     scanData?.intent === "scan" && !scanData?.ok ? scanData.error : null;
 
   const syncData = syncFetcher.data as
-    | { ok: boolean; intent: string; message?: string; error?: string }
+    | {
+        ok: boolean;
+        intent: string;
+        message?: string;
+        error?: string;
+        jobId?: string;
+        failedCount?: number;
+        failures?: Array<{ itemType: string; itemKey: string; message: string }>;
+      }
     | undefined;
 
   const connectionData = connectionFetcher.data as
@@ -719,6 +729,9 @@ export default function DefinitionSyncDashboard() {
     visibleMetaobjectTypes.length + visibleMetafieldIdentifiers.length;
   const syncFailed = syncData?.intent === "sync" && !syncData.ok;
   const syncSucceeded = syncData?.intent === "sync" && syncData.ok;
+  // Items fail individually without throwing, so a resolved sync is not
+  // necessarily a clean one.
+  const syncFailureCount = syncSucceeded ? (syncData?.failedCount ?? 0) : 0;
 
   return (
     <div className="em-app">
@@ -896,8 +909,41 @@ export default function DefinitionSyncDashboard() {
                     ) : null}
 
                     {syncSucceeded ? (
-                      <Banner tone="success" title="Sync completed">
-                        {syncData?.message}
+                      <Banner
+                        tone={syncFailureCount > 0 ? "warning" : "success"}
+                        title={
+                          syncFailureCount > 0
+                            ? `Sync finished with ${String(syncFailureCount)} failure(s)`
+                            : "Sync completed"
+                        }
+                      >
+                        {syncFailureCount > 0 ? (
+                          <>
+                            <ul
+                              className="em-body-sm"
+                              style={{ margin: 0, paddingLeft: 18 }}
+                            >
+                              {(syncData?.failures ?? []).map((failure) => (
+                                <li key={`${failure.itemType}-${failure.itemKey}`}>
+                                  <code className="em-code-chip">
+                                    {failure.itemKey}
+                                  </code>
+                                  {` — ${failure.message}`}
+                                </li>
+                              ))}
+                            </ul>
+                            {syncFailureCount > (syncData?.failures?.length ?? 0) ? (
+                              <p className="em-body-sm">
+                                {`…and ${String(
+                                  syncFailureCount -
+                                    (syncData?.failures?.length ?? 0),
+                                )} more. Open the full log to see everything.`}
+                              </p>
+                            ) : null}
+                          </>
+                        ) : (
+                          syncData?.message
+                        )}
                       </Banner>
                     ) : null}
 

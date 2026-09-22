@@ -48,6 +48,8 @@ model DefinitionSyncJob {
   id                            String              @id @default(cuid())
   sourceShop                    String
   targetShop                    String
+  sourceKind                    String              @default("store")
+  sourceFileName                String?
   status                        String              @default("pending")
   totalMetafieldDefinitions     Int                 @default(0)
   totalMetaobjectDefinitions    Int                 @default(0)
@@ -58,6 +60,9 @@ model DefinitionSyncJob {
   createdMetafieldDefinitions   Int                 @default(0)
   createdMetaobjectDefinitions  Int                 @default(0)
   addedMetaobjectFields         Int                 @default(0)
+  updatedMetafieldDefinitions   Int                 @default(0)
+  updatedMetaobjectDefinitions  Int                 @default(0)
+  updatedMetaobjectFields       Int                 @default(0)
   copiedMetaobjectEntries       Int                 @default(0)
   skippedMetaobjectEntries      Int                 @default(0)
   failedMetaobjectEntries       Int                 @default(0)

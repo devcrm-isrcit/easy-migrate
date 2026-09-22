@@ -21,6 +21,7 @@ export default function App() {
           Dashboard
         </Link>
         <Link to="/app/files">Files Migration</Link>
+        <Link to="/app/import-export">Import / Export</Link>
         <Link to="/app/history">History</Link>
       </NavMenu>
       <Outlet />

@@ -9,9 +9,22 @@ import type {
   MetaobjectDefinitionFetchResult,
   MetaobjectDefinitionRecord,
   MetaobjectFieldDefinitionRecord,
+  ValidationRule,
 } from "./types.server";
 
 type AdminGraphqlClient = Parameters<typeof targetAdminGraphql>[0];
+
+/**
+ * MetafieldDefinitionValidationInput accepts only `name` and `value`. Our
+ * internal ValidationRule also carries `type`, which Shopify rejects outright,
+ * so the mutation input is always built explicitly rather than passed through.
+ */
+function toValidationInput(validations: ValidationRule[] | undefined) {
+  return (validations ?? []).map((validation) => ({
+    name: validation.name,
+    value: validation.value,
+  }));
+}
 
 interface FetchSourceOptions {
   shop: string;
@@ -174,24 +187,15 @@ export async function createMetaobjectDefinition(
   definition: MetaobjectDefinitionRecord,
 ) {
   const targetType = toMetaobjectDefinitionCreateType(definition.type);
-  const validAdminValues = ["MERCHANT_READ", "MERCHANT_READ_WRITE"];
-  const sanitizedAdmin = validAdminValues.includes(definition.access?.admin ?? "")
-    ? definition.access!.admin
-    : "MERCHANT_READ_WRITE";
 
-  const validStorefrontValues = ["NONE", "PUBLIC_READ"];
-  const sanitizedStorefront = validStorefrontValues.includes(definition.access?.storefront ?? "")
-    ? definition.access!.storefront
-    : "NONE";
-
+  // Fixed values, never copied from the source definition, so every definition
+  // this app creates lands with predictable access. The `admin` key is only
+  // accepted on app-reserved types: Shopify rejects it outright on a
+  // merchant-owned type ("Admin access can only be specified on metaobject
+  // definitions that have an app-reserved type."), so it is omitted there.
   const access = isAppReservedMetaobjectType(definition.type)
-    ? {
-        admin: sanitizedAdmin,
-        storefront: sanitizedStorefront,
-      }
-    : {
-        storefront: sanitizedStorefront,
-      };
+    ? { admin: "MERCHANT_READ_WRITE", storefront: "PUBLIC_READ" }
+    : { storefront: "PUBLIC_READ" };
 
   const data = await targetAdminGraphql<
     {
@@ -223,10 +227,7 @@ export async function createMetaobjectDefinition(
         type: targetType,
         description: definition.description,
         displayNameKey: definition.displayNameKey,
-        access: {
-          admin: "MERCHANT_READ_WRITE",
-          storefront: "PUBLIC_READ",
-        },
+        access,
         capabilities: definition.capabilities?.publishable?.enabled
           ? { publishable: { enabled: true } }
           : undefined,
@@ -236,7 +237,7 @@ export async function createMetaobjectDefinition(
           type: field.type,
           description: field.description,
           required: field.required,
-          validations: field.validations,
+          validations: toValidationInput(field.validations),
         })),
       },
     },
@@ -295,7 +296,7 @@ export async function addMissingMetaobjectFields(
             type: field.type,
             description: field.description,
             required: field.required,
-            validations: field.validations,
+            validations: toValidationInput(field.validations),
           },
         })),
       },
@@ -305,6 +306,111 @@ export async function addMissingMetaobjectFields(
   assertNoUserErrors(
     data.metaobjectDefinitionUpdate.userErrors,
     "Failed to add missing metaobject fields.",
+  );
+
+  if (!data.metaobjectDefinitionUpdate.metaobjectDefinition) {
+    throw new Error("Shopify did not return the updated metaobject definition.");
+  }
+
+  return data.metaobjectDefinitionUpdate.metaobjectDefinition;
+}
+
+/**
+ * Brings an existing metaobject definition in line with the source: creates the
+ * fields it lacks, updates fields whose name/description/required/validations
+ * drifted, and applies definition-level changes. Field types are never touched
+ * (Shopify forbids retyping) and target-only fields are never deleted.
+ */
+export async function reconcileMetaobjectDefinition(
+  admin: AdminGraphqlClient,
+  metaobjectDefinitionId: string,
+  input: {
+    createFields?: MetaobjectFieldDefinitionRecord[];
+    updateFields?: MetaobjectFieldDefinitionRecord[];
+    name?: string;
+    description?: string | null;
+    displayNameKey?: string | null;
+    publishable?: boolean;
+  },
+) {
+  const fieldDefinitions = [
+    ...(input.createFields ?? []).map((field) => ({
+      create: {
+        key: field.key,
+        name: field.name,
+        type: field.type,
+        description: field.description,
+        required: field.required,
+        validations: toValidationInput(field.validations),
+      },
+    })),
+    ...(input.updateFields ?? []).map((field) => ({
+      update: {
+        key: field.key,
+        name: field.name,
+        description: field.description,
+        required: field.required,
+        validations: toValidationInput(field.validations),
+      },
+    })),
+  ];
+
+  const definition: Record<string, unknown> = {};
+
+  if (fieldDefinitions.length) {
+    definition.fieldDefinitions = fieldDefinitions;
+  }
+
+  if (input.name !== undefined) {
+    definition.name = input.name;
+  }
+
+  if (input.description !== undefined) {
+    definition.description = input.description;
+  }
+
+  if (input.displayNameKey !== undefined) {
+    definition.displayNameKey = input.displayNameKey;
+  }
+
+  if (input.publishable !== undefined) {
+    definition.capabilities = { publishable: { enabled: input.publishable } };
+  }
+
+  if (!Object.keys(definition).length) {
+    return { id: metaobjectDefinitionId };
+  }
+
+  const data = await targetAdminGraphql<
+    {
+      metaobjectDefinitionUpdate: {
+        metaobjectDefinition?: { id: string } | null;
+        userErrors: GraphqlUserError[];
+      };
+    },
+    { id: string; definition: Record<string, unknown> }
+  >(
+    admin,
+    `#graphql
+      mutation ReconcileMetaobjectDefinition($id: ID!, $definition: MetaobjectDefinitionUpdateInput!) {
+        metaobjectDefinitionUpdate(id: $id, definition: $definition) {
+          metaobjectDefinition {
+            id
+          }
+          userErrors {
+            field
+            message
+            code
+          }
+        }
+      }
+    `,
+    { id: metaobjectDefinitionId, definition },
+  );
+
+  assertNoUserErrors(
+    data.metaobjectDefinitionUpdate.userErrors,
+    "Failed to update metaobject definition.",
   );
 
   if (!data.metaobjectDefinitionUpdate.metaobjectDefinition) {

@@ -41,7 +41,9 @@ export default function App() {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
-        <style>{criticalStyles}</style>
+        {/* Raw HTML, not a text child: React escapes quotes in a text child
+            during SSR only, which makes hydration report a mismatch. */}
+        <style dangerouslySetInnerHTML={{ __html: criticalStyles }} />
         <Meta />
         <Links />
       </head>

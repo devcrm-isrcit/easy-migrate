@@ -1,16 +1,25 @@
 import prisma from "../../db.server";
-import type { JobStatus, LogStatus, SyncItemType } from "./types.server";
+import type {
+  DefinitionSourceKind,
+  JobStatus,
+  LogStatus,
+  SyncItemType,
+} from "./types.server";
 
 export async function createSyncJob(input: {
   sourceShop: string;
   targetShop: string;
   status?: JobStatus;
+  sourceKind?: DefinitionSourceKind;
+  sourceFileName?: string | null;
 }) {
   return prisma.definitionSyncJob.create({
     data: {
       sourceShop: input.sourceShop,
       targetShop: input.targetShop,
       status: input.status ?? "pending",
+      sourceKind: input.sourceKind ?? "store",
+      sourceFileName: input.sourceFileName ?? null,
     },
   });
 }
@@ -28,6 +37,9 @@ export async function updateSyncJob(
     createdMetafieldDefinitions?: number;
     createdMetaobjectDefinitions?: number;
     addedMetaobjectFields?: number;
+    updatedMetafieldDefinitions?: number;
+    updatedMetaobjectDefinitions?: number;
+    updatedMetaobjectFields?: number;
     copiedMetaobjectEntries?: number;
     skippedMetaobjectEntries?: number;
     failedMetaobjectEntries?: number;
@@ -52,6 +64,25 @@ export async function createSyncLog(input: {
   return prisma.definitionSyncLog.create({
     data: input,
   });
+}
+
+/**
+ * The items that failed during a run, for reporting the outcome inline instead
+ * of making someone open the history page to find out something went wrong.
+ */
+export async function getFailedSyncLogs(jobId: string, take = 10) {
+  const logs = await prisma.definitionSyncLog.findMany({
+    where: { jobId, status: "failed" },
+    orderBy: { createdAt: "asc" },
+    select: { itemType: true, itemKey: true, message: true },
+    take,
+  });
+
+  return logs.map((log) => ({
+    itemType: log.itemType,
+    itemKey: log.itemKey,
+    message: log.message,
+  }));
 }
 
 export async function getSyncLogs(jobId: string) {

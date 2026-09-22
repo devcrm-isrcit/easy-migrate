@@ -5,9 +5,8 @@ name = "Easy Migrate"
 application_url = "https://easy-migrate.onrender.com"
 embedded = true
 
-[access_scopes]
-# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products,write_content,write_customers,write_orders,read_metaobject_definitions,write_metaobject_definitions,read_metaobjects,write_metaobjects,read_files,write_files"
+[build]
+automatically_update_urls_on_dev = true
 
 [webhooks]
 api_version = "2026-07"
@@ -20,8 +19,9 @@ api_version = "2026-07"
   uri = "/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
 
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_files,read_metaobject_definitions,read_metaobjects,write_content,write_customers,write_files,write_metaobject_definitions,write_metaobjects,write_orders,write_products"
+
 [auth]
 redirect_urls = [ "https://easy-migrate.onrender.com/api/auth" ]
-
-[build]
-automatically_update_urls_on_dev = true

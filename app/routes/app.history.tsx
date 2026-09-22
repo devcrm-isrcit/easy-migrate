@@ -45,6 +45,7 @@ const STATUS_LABELS: Record<string, string> = {
   scanning: "Running",
   pending: "Pending",
   created: "Created",
+  updated: "Updated",
   exists: "Already in target",
   skipped: "Skipped",
   conflict: "Conflict",
@@ -80,6 +81,8 @@ interface FileHistoryLog {
 interface DefinitionHistoryJob {
   id: string;
   sourceShop: string;
+  sourceKind: string;
+  sourceFileName: string | null;
   targetShop: string;
   status: string;
   createdMetafieldDefinitions: number;
@@ -905,7 +908,11 @@ export default function HistoryPage() {
                 <div key={job.id} ref={job.id === jobId ? detailsRef : undefined}>
                   <RunCard
                     status={job.status}
-                    store={job.sourceShop}
+                    store={
+                      job.sourceKind === "csv"
+                        ? `CSV · ${job.sourceFileName ?? job.sourceShop}`
+                        : job.sourceShop
+                    }
                     timestamp={job.createdAt}
                     id={job.id}
                     errorMessage={job.errorMessage}

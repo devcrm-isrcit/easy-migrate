@@ -1708,3 +1708,154 @@ textarea {
 .em-app ::-webkit-scrollbar-thumb:hover {
   background: var(--em-border-strong);
 }
+
+/* ── Dropzone ─────────────────────────────────────────────────────────── */
+
+.em-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--em-xs);
+  min-height: 190px;
+  padding: var(--em-lg);
+  text-align: center;
+  border: 2px dashed var(--em-border-strong);
+  border-radius: var(--em-radius-lg);
+  background: var(--em-surface-bright);
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+
+.em-dropzone:hover {
+  border-color: var(--em-primary);
+  background: var(--em-surface-container-low);
+}
+
+/* Dragging a file over the zone. */
+.em-dropzone--dragging {
+  border-color: var(--em-primary);
+  border-style: solid;
+  background: var(--em-secondary-container);
+}
+
+.em-dropzone--invalid {
+  border-color: var(--em-critical);
+  background: var(--em-error-container);
+}
+
+.em-dropzone--disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Kept focusable for keyboard users rather than display:none. */
+.em-dropzone__input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.em-dropzone__input:focus-visible + .em-dropzone__icon {
+  outline: 2px solid var(--em-primary);
+  outline-offset: 4px;
+  border-radius: var(--em-radius-full);
+}
+
+.em-dropzone__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--em-radius-full);
+  background: var(--em-secondary-container);
+  color: var(--em-primary);
+}
+
+.em-dropzone--dragging .em-dropzone__icon {
+  background: var(--em-surface);
+}
+
+.em-dropzone__title {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--em-text-primary);
+  margin: 0;
+}
+
+.em-dropzone__hint {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--em-secondary);
+  margin: 0;
+}
+
+.em-dropzone__link {
+  color: var(--em-primary);
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+/* Selected-file row, shown in place of the prompt. */
+.em-file-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--em-sm);
+  padding: var(--em-sm) var(--em-md);
+  border: 1px solid var(--em-border);
+  border-radius: var(--em-radius-lg);
+  background: var(--em-surface-bright);
+}
+
+.em-file-chip__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--em-radius);
+  background: var(--em-secondary-container);
+  color: var(--em-primary);
+}
+
+.em-file-chip__body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 2px;
+}
+
+.em-file-chip__name {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--em-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.em-file-chip__meta {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--em-secondary);
+}
+
+.em-file-chip__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--em-xs);
+  flex: 0 0 auto;
+}

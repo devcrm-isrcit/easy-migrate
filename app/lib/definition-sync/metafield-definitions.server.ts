@@ -213,3 +213,63 @@ export async function createMetafieldDefinition(
 }
 
 export { formatGraphqlUserErrors };
+
+/**
+ * Updates an existing metafield definition in place. Identity (namespace, key,
+ * ownerType) and `type` are fixed by Shopify, so only the descriptive
+ * properties and validations can change.
+ */
+export async function updateMetafieldDefinition(
+  admin: AdminGraphqlClient,
+  definition: MetafieldDefinitionRecord,
+) {
+  const data = await targetAdminGraphql<
+    {
+      metafieldDefinitionUpdate: {
+        updatedDefinition?: { id: string } | null;
+        userErrors: GraphqlUserError[];
+      };
+    },
+    { definition: Record<string, unknown> }
+  >(
+    admin,
+    `#graphql
+      mutation UpdateMetafieldDefinition($definition: MetafieldDefinitionUpdateInput!) {
+        metafieldDefinitionUpdate(definition: $definition) {
+          updatedDefinition {
+            id
+          }
+          userErrors {
+            field
+            message
+            code
+          }
+        }
+      }
+    `,
+    {
+      definition: {
+        name: definition.name,
+        namespace: definition.namespace,
+        key: definition.key,
+        ownerType: definition.ownerType,
+        description: definition.description,
+        validations: definition.validations.map((validation) => ({
+          name: validation.name,
+          value: validation.value,
+        })),
+      },
+    },
+  );
+
+  assertNoUserErrors(
+    data.metafieldDefinitionUpdate.userErrors,
+    "Failed to update metafield definition.",
+  );
+
+  if (!data.metafieldDefinitionUpdate.updatedDefinition) {
+    throw new Error("Shopify did not return the updated metafield definition.");
+  }
+
+  return data.metafieldDefinitionUpdate.updatedDefinition;
+}

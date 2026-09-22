@@ -6,8 +6,15 @@ import { syncMetaobjectContent } from "./content-sync.server";
 import {
   createSyncJob,
   createSyncLog,
+  getFailedSyncLogs,
   updateSyncJob,
 } from "./logger.server";
+import {
+  METAOBJECT_REFERENCE_VALIDATION_NAMES,
+  getReferencedMetaobjectTypes,
+  hasMetaobjectReferenceValidation,
+  parseMetaobjectDefinitionValidationValue,
+} from "./metaobject-references.server";
 import {
   getMetaobjectTypeLogicalKey,
   isAppReservedMetaobjectType,
@@ -15,76 +22,26 @@ import {
 import {
   createMetafieldDefinition,
   fetchMetafieldDefinitions,
+  updateMetafieldDefinition,
 } from "./metafield-definitions.server";
 import {
   addMissingMetaobjectFields,
   createMetaobjectDefinition,
   fetchMetaobjectDefinitions,
+  reconcileMetaobjectDefinition,
 } from "./metaobject-definitions.server";
+import { hasApplicableUpdates } from "./types.server";
 import type {
   DefinitionScanPreview,
+  DefinitionSourceKind,
+  MetafieldDefinitionFetchResult,
+  MetaobjectDefinitionFetchResult,
   MetaobjectDefinitionRecord,
   MetaobjectFieldDefinitionRecord,
   ValidationRule,
 } from "./types.server";
 
 type AdminGraphqlClient = Parameters<typeof fetchMetafieldDefinitions>[0]["admin"];
-
-const METAOBJECT_REFERENCE_VALIDATION_NAMES = new Set([
-  "metaobject_definition_id",
-  "metaobject_definition_ids",
-]);
-
-function parseMetaobjectDefinitionValidationValue(validation: ValidationRule) {
-  if (!validation.value) {
-    return [];
-  }
-
-  if (validation.name === "metaobject_definition_id") {
-    return [validation.value];
-  }
-
-  if (validation.name === "metaobject_definition_ids") {
-    try {
-      const parsed = JSON.parse(validation.value);
-      return Array.isArray(parsed)
-        ? parsed.filter((value): value is string => typeof value === "string")
-        : [];
-    } catch {
-      return [];
-    }
-  }
-
-  return [];
-}
-
-function getReferencedMetaobjectTypes(
-  validations: ValidationRule[],
-  sourceMetaobjectTypeById: Map<string, string>,
-) {
-  const referencedTypes = new Set<string>();
-
-  for (const validation of validations) {
-    if (!METAOBJECT_REFERENCE_VALIDATION_NAMES.has(validation.name)) {
-      continue;
-    }
-
-    for (const definitionId of parseMetaobjectDefinitionValidationValue(validation)) {
-      const type = sourceMetaobjectTypeById.get(definitionId);
-      if (type) {
-        referencedTypes.add(type);
-      }
-    }
-  }
-
-  return [...referencedTypes];
-}
-
-function hasMetaobjectReferenceValidation(validations: ValidationRule[]) {
-  return validations.some((validation) =>
-    METAOBJECT_REFERENCE_VALIDATION_NAMES.has(validation.name),
-  );
-}
 
 function buildSourceMetaobjectTypeById(preview: DefinitionScanPreview) {
   const sourceMetaobjectTypeById = new Map<string, string>();
@@ -278,6 +235,8 @@ async function syncMetaobjectsWithDependencies({
 }) {
   let createdMetaobjectDefinitions = 0;
   let addedMetaobjectFields = 0;
+  let updatedMetaobjectDefinitions = 0;
+  let updatedMetaobjectFields = 0;
   let failedCount = 0;
 
   const sourceMetaobjectDefinitions = [
@@ -323,6 +282,17 @@ async function syncMetaobjectsWithDependencies({
         itemKey: fieldConflict.key,
         status: "conflict",
         message: fieldConflict.message,
+      });
+    }
+
+    // Reported so the divergence is visible; never deleted.
+    for (const extraField of item.extraFields) {
+      await createSyncLog({
+        jobId,
+        itemType: "metaobject_field",
+        itemKey: `${item.type}.${extraField.key}`,
+        status: "skipped",
+        message: "Exists in this store but not in the source. Left untouched.",
       });
     }
 
@@ -563,9 +533,83 @@ async function syncMetaobjectsWithDependencies({
     pendingFieldAdds.clear();
   }
 
+  // Updates run last, once every definition exists and
+  // `targetMetaobjectIdByType` can resolve any reference validations.
+  for (const item of preview.metaobjects.existing) {
+    const definitionId = item.target?.id;
+
+    if (!definitionId || (!item.changedFields.length && !item.definitionChanges.length)) {
+      continue;
+    }
+
+    const changedProperties = new Set(
+      item.definitionChanges.map((change) => change.property),
+    );
+
+    try {
+      await reconcileMetaobjectDefinition(admin, definitionId, {
+        updateFields: item.changedFields.map((difference) =>
+          prepareMetaobjectField(
+            difference.source,
+            sourceMetaobjectTypeById,
+            targetMetaobjectIdByType,
+          ),
+        ),
+        ...(changedProperties.has("name") ? { name: item.source.name } : {}),
+        ...(changedProperties.has("description")
+          ? { description: item.source.description ?? null }
+          : {}),
+        ...(changedProperties.has("displayNameKey")
+          ? { displayNameKey: item.source.displayNameKey ?? null }
+          : {}),
+        ...(changedProperties.has("publishable")
+          ? { publishable: item.source.capabilities?.publishable?.enabled ?? false }
+          : {}),
+      });
+
+      updatedMetaobjectFields += item.changedFields.length;
+
+      for (const difference of item.changedFields) {
+        await createSyncLog({
+          jobId,
+          itemType: "metaobject_field",
+          itemKey: difference.key,
+          status: "updated",
+          message: `Updated ${difference.changes
+            .map((change) => change.property)
+            .join(", ")} to match the source.`,
+        });
+      }
+
+      if (changedProperties.size) {
+        updatedMetaobjectDefinitions += 1;
+        await createSyncLog({
+          jobId,
+          itemType: "metaobject_definition",
+          itemKey: item.type,
+          status: "updated",
+          message: `Updated ${[...changedProperties].join(", ")} to match the source.`,
+        });
+      }
+    } catch (error) {
+      failedCount += 1;
+      await createSyncLog({
+        jobId,
+        itemType: "metaobject_definition",
+        itemKey: item.type,
+        status: "failed",
+        message: `Couldn't apply updates: ${
+          error instanceof Error ? error.message : "update failed."
+        }`,
+      });
+    }
+  }
+
   return {
     createdMetaobjectDefinitions,
     addedMetaobjectFields,
+    updatedMetaobjectDefinitions,
+    updatedMetaobjectFields,
     failedCount,
     targetMetaobjectIdByType,
   };
@@ -582,15 +626,51 @@ export async function buildDefinitionScanPreview({
   targetShop: string;
   admin: NonNullable<AdminGraphqlClient>;
 }): Promise<DefinitionScanPreview> {
+  // Passed unawaited so the source and target reads still run concurrently.
+  return buildDefinitionScanPreviewFromDefinitions({
+    sourceShop,
+    targetShop,
+    admin,
+    sourceMetafields: fetchMetafieldDefinitions({
+      source: { shop: sourceShop, token: sourceToken },
+    }),
+    sourceMetaobjects: fetchMetaobjectDefinitions({
+      source: { shop: sourceShop, token: sourceToken },
+    }),
+  });
+}
+
+/**
+ * The comparison half of a scan, with the source side supplied rather than
+ * fetched. The live token flow hands in in-flight fetches against the source
+ * store; the CSV import hands in definitions parsed out of an uploaded file.
+ */
+export async function buildDefinitionScanPreviewFromDefinitions({
+  sourceShop,
+  targetShop,
+  admin,
+  sourceMetafields: sourceMetafieldsInput,
+  sourceMetaobjects: sourceMetaobjectsInput,
+  sourceKind = "store",
+}: {
+  sourceShop: string;
+  targetShop: string;
+  admin: NonNullable<AdminGraphqlClient>;
+  sourceMetafields: MetafieldDefinitionFetchResult | Promise<MetafieldDefinitionFetchResult>;
+  sourceMetaobjects:
+    | MetaobjectDefinitionFetchResult
+    | Promise<MetaobjectDefinitionFetchResult>;
+  sourceKind?: DefinitionSourceKind;
+}): Promise<DefinitionScanPreview> {
   const [
     sourceMetafields,
     targetMetafields,
     sourceMetaobjects,
     targetMetaobjects,
   ] = await Promise.all([
-    fetchMetafieldDefinitions({ source: { shop: sourceShop, token: sourceToken } }),
+    Promise.resolve(sourceMetafieldsInput),
     fetchMetafieldDefinitions({ admin }),
-    fetchMetaobjectDefinitions({ source: { shop: sourceShop, token: sourceToken } }),
+    Promise.resolve(sourceMetaobjectsInput),
     fetchMetaobjectDefinitions({ admin }),
   ]);
 
@@ -624,9 +704,10 @@ export async function buildDefinitionScanPreview({
   const ownerTypeWarnings = [
     ...sourceMetafields.ownerTypeAccess
       .filter((item) => !item.accessible)
-      .map(
-        (item) =>
-          `Source token can't read ${item.ownerType} metafield definitions with the current source custom-app scopes.`,
+      .map((item) =>
+        sourceKind === "csv"
+          ? `The CSV contains no ${item.ownerType} metafield definitions because the store it was exported from couldn't read them.`
+          : `Source token can't read ${item.ownerType} metafield definitions with the current source custom-app scopes.`,
       ),
     ...targetMetafields.ownerTypeAccess
       .filter((item) => !item.accessible)
@@ -709,6 +790,18 @@ export async function buildDefinitionScanPreview({
         (total, item) => total + item.fieldConflicts.length,
         0,
       ),
+      changedMetafieldDefinitions: metafieldComparison.changed.length,
+      changedMetaobjectFields: metaobjectComparison.existing.reduce(
+        (total, item) => total + item.changedFields.length,
+        0,
+      ),
+      updatableMetaobjectDefinitions: metaobjectComparison.existing.filter(
+        hasApplicableUpdates,
+      ).length,
+      extraMetaobjectFields: metaobjectComparison.existing.reduce(
+        (total, item) => total + item.extraFields.length,
+        0,
+      ),
     },
     metafields: metafieldComparison,
     metaobjects: metaobjectComparison,
@@ -740,6 +833,53 @@ export async function runDefinitionSync({
     targetShop,
     admin,
   });
+
+  return runDefinitionSyncFromPreview({
+    preview,
+    sourceShop,
+    sourceToken,
+    targetShop,
+    admin,
+    selectedMetaobjectTypes,
+    selectedMetafieldKeys,
+    copyContent,
+  });
+}
+
+/**
+ * Applies a scan preview to the destination store. Split out of
+ * `runDefinitionSync` so the CSV import can reuse the whole engine —
+ * dependency ordering, deferred reference fields and retries included — with a
+ * preview built from a file instead of a live source store.
+ */
+export async function runDefinitionSyncFromPreview({
+  preview,
+  sourceShop,
+  sourceToken,
+  targetShop,
+  admin,
+  selectedMetaobjectTypes,
+  selectedMetafieldKeys,
+  copyContent = false,
+  sourceKind = "store",
+  sourceFileName,
+}: {
+  preview: DefinitionScanPreview;
+  sourceShop: string;
+  sourceToken?: string;
+  targetShop: string;
+  admin: NonNullable<AdminGraphqlClient>;
+  selectedMetaobjectTypes?: string[];
+  selectedMetafieldKeys?: string[];
+  copyContent?: boolean;
+  sourceKind?: DefinitionSourceKind;
+  sourceFileName?: string | null;
+}) {
+  if (copyContent && !sourceToken) {
+    throw new Error(
+      "Copying metaobject entries needs a live source store connection. A definitions CSV carries no entry values.",
+    );
+  }
 
   const selectedMetaobjectTypeSet = new Set(selectedMetaobjectTypes ?? []);
   const selectedMetafieldKeySet = new Set(selectedMetafieldKeys ?? []);
@@ -793,6 +933,11 @@ export async function runDefinitionSync({
             ),
           )
         : preview.metafields.existing,
+      changed: hasAnySelections
+        ? preview.metafields.changed.filter((difference) =>
+            selectedMetafieldKeySet.has(difference.key),
+          )
+        : preview.metafields.changed,
       conflicts: hasAnySelections
         ? preview.metafields.conflicts.filter((conflict) =>
             selectedMetafieldKeySet.has(conflict.key),
@@ -823,11 +968,19 @@ export async function runDefinitionSync({
     sourceShop,
     targetShop,
     status: "syncing",
+    sourceKind,
+    sourceFileName,
   });
 
   let createdMetafieldDefinitions = 0;
   let createdMetaobjectDefinitions = 0;
   let addedMetaobjectFields = 0;
+  let updatedMetafieldDefinitions = 0;
+  let updatedMetaobjectDefinitions = 0;
+  let updatedMetaobjectFields = 0;
+  let copiedMetaobjectEntries = 0;
+  let skippedMetaobjectEntries = 0;
+  let failedMetaobjectEntries = 0;
   const conflictCount =
     preview.summary.conflictingMetafieldDefinitions +
     preview.summary.conflictingMetaobjectFields;
@@ -857,6 +1010,8 @@ export async function runDefinitionSync({
     const {
       createdMetaobjectDefinitions: createdMetaobjectCount,
       addedMetaobjectFields: addedMetaobjectFieldCount,
+      updatedMetaobjectDefinitions: updatedMetaobjectCount,
+      updatedMetaobjectFields: updatedMetaobjectFieldCount,
       failedCount: metaobjectFailedCount,
       targetMetaobjectIdByType: syncedTargetMetaobjectIdByType,
     } = await syncMetaobjectsWithDependencies({
@@ -867,6 +1022,8 @@ export async function runDefinitionSync({
 
     createdMetaobjectDefinitions += createdMetaobjectCount;
     addedMetaobjectFields += addedMetaobjectFieldCount;
+    updatedMetaobjectDefinitions += updatedMetaobjectCount;
+    updatedMetaobjectFields += updatedMetaobjectFieldCount;
     failedCount += metaobjectFailedCount;
 
     const refreshedTargetMetaobjects = await fetchMetaobjectDefinitions({ admin });
@@ -875,14 +1032,52 @@ export async function runDefinitionSync({
       syncedTargetMetaobjectIdByType,
     );
 
+    const metafieldChangesByKey = new Map(
+      filteredPreview.metafields.changed.map((difference) => [
+        difference.key,
+        difference,
+      ]),
+    );
+
     for (const definition of filteredPreview.metafields.existing) {
-      await createSyncLog({
-        jobId: job.id,
-        itemType: "metafield_definition",
-        itemKey: `${definition.ownerType}:${definition.namespace}:${definition.key}`,
-        status: "exists",
-        message: "Definition already exists with the same type.",
-      });
+      const itemKey = `${definition.ownerType}:${definition.namespace}:${definition.key}`;
+      const difference = metafieldChangesByKey.get(itemKey);
+
+      if (!difference) {
+        await createSyncLog({
+          jobId: job.id,
+          itemType: "metafield_definition",
+          itemKey,
+          status: "exists",
+          message: "Definition already exists with the same type.",
+        });
+        continue;
+      }
+
+      try {
+        await updateMetafieldDefinition(admin, definition);
+        updatedMetafieldDefinitions += 1;
+        await createSyncLog({
+          jobId: job.id,
+          itemType: "metafield_definition",
+          itemKey,
+          status: "updated",
+          message: `Updated ${difference.changes
+            .map((change) => change.property)
+            .join(", ")} to match the source.`,
+        });
+      } catch (error) {
+        failedCount += 1;
+        await createSyncLog({
+          jobId: job.id,
+          itemType: "metafield_definition",
+          itemKey,
+          status: "failed",
+          message: `Couldn't apply updates: ${
+            error instanceof Error ? error.message : "update failed."
+          }`,
+        });
+      }
     }
 
     for (const conflict of filteredPreview.metafields.conflicts) {
@@ -990,10 +1185,6 @@ export async function runDefinitionSync({
       }
     }
 
-    let copiedMetaobjectEntries = 0;
-    let skippedMetaobjectEntries = 0;
-    let failedMetaobjectEntries = 0;
-
     if (copyContent) {
       const allMetaobjectTypes = [
         ...filteredPreview.metaobjects.missing.map((d) => d.type),
@@ -1008,7 +1199,8 @@ export async function runDefinitionSync({
 
         const contentResult = await syncMetaobjectContent({
           sourceShop,
-          sourceToken,
+          // Guarded at the top of this function: copyContent requires a token.
+          sourceToken: sourceToken as string,
           admin,
           jobId: job.id,
           metaobjectTypes: allMetaobjectTypes,
@@ -1022,19 +1214,6 @@ export async function runDefinitionSync({
       }
     }
 
-    await updateSyncJob(job.id, {
-      status: failedCount > 0 ? "completed_with_errors" : "completed",
-      createdMetafieldDefinitions,
-      createdMetaobjectDefinitions,
-      addedMetaobjectFields,
-      copiedMetaobjectEntries,
-      skippedMetaobjectEntries,
-      failedMetaobjectEntries,
-      conflictCount,
-      failedCount,
-    });
-
-    return { jobId: job.id, preview: filteredPreview };
   } catch (error) {
     await updateSyncJob(job.id, {
       status: "failed",
@@ -1047,4 +1226,56 @@ export async function runDefinitionSync({
     });
     throw error;
   }
+
+  const status = failedCount > 0 ? "completed_with_errors" : "completed";
+
+  // Shopify has already been changed by this point. Recording the run is
+  // bookkeeping: if it fails, say so, but never report it as a failed import —
+  // that would send someone off to re-run work that actually succeeded.
+  let recordingError: string | null = null;
+  let failures: Awaited<ReturnType<typeof getFailedSyncLogs>> = [];
+
+  try {
+    await updateSyncJob(job.id, {
+      status,
+      createdMetafieldDefinitions,
+      createdMetaobjectDefinitions,
+      addedMetaobjectFields,
+      updatedMetafieldDefinitions,
+      updatedMetaobjectDefinitions,
+      updatedMetaobjectFields,
+      copiedMetaobjectEntries,
+      skippedMetaobjectEntries,
+      failedMetaobjectEntries,
+      conflictCount,
+      failedCount,
+    });
+
+    failures = await getFailedSyncLogs(job.id);
+  } catch (error) {
+    recordingError =
+      error instanceof Error ? error.message : "Couldn't record this run.";
+  }
+
+  // The outcome travels back with the job id: individual items fail without
+  // throwing, so a caller that only sees a job id cannot tell a clean run
+  // from one where every definition failed.
+  return {
+    jobId: job.id,
+    preview: filteredPreview,
+    status,
+    createdMetafieldDefinitions,
+    createdMetaobjectDefinitions,
+    addedMetaobjectFields,
+    updatedMetafieldDefinitions,
+    updatedMetaobjectDefinitions,
+    updatedMetaobjectFields,
+    copiedMetaobjectEntries,
+    skippedMetaobjectEntries,
+    failedMetaobjectEntries,
+    conflictCount,
+    failedCount,
+    failures,
+    recordingError,
+  };
 }

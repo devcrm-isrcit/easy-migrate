@@ -9,6 +9,7 @@ export const JOB_STATUSES = [
 ] as const;
 export const LOG_STATUSES = [
   "created",
+  "updated",
   "exists",
   "skipped",
   "conflict",
@@ -20,6 +21,10 @@ export const ITEM_TYPES = [
   "metaobject_field",
   "metaobject_entry",
 ] as const;
+
+export const DEFINITION_SOURCE_KINDS = ["store", "csv"] as const;
+
+export type DefinitionSourceKind = (typeof DEFINITION_SOURCE_KINDS)[number];
 
 export type TokenStatus = (typeof TOKEN_STATUSES)[number];
 export type JobStatus = (typeof JOB_STATUSES)[number];
@@ -111,6 +116,28 @@ export interface MetaobjectDefinitionFetchResult {
   definitions: MetaobjectDefinitionRecord[];
 }
 
+/** A property that exists on both sides but does not match. */
+export interface PropertyDifference {
+  property: string;
+  sourceValue: string;
+  targetValue: string;
+}
+
+export interface MetafieldDifference {
+  key: string;
+  source: MetafieldDefinitionRecord;
+  target: MetafieldDefinitionRecord;
+  changes: PropertyDifference[];
+}
+
+export interface MetaobjectFieldDifference {
+  key: string;
+  fieldKey: string;
+  source: MetaobjectFieldDefinitionRecord;
+  target: MetaobjectFieldDefinitionRecord;
+  changes: PropertyDifference[];
+}
+
 export interface MetafieldConflict {
   key: string;
   source: MetafieldDefinitionRecord;
@@ -129,8 +156,25 @@ export interface MetaobjectComparisonItem {
   type: string;
   source: MetaobjectDefinitionRecord;
   target?: MetaobjectDefinitionRecord;
+  /** In the source, absent from the target. Created on import. */
   missingFields: MetaobjectFieldDefinitionRecord[];
+  /** Same key, different type. Never changed — Shopify can't retype a field. */
   fieldConflicts: MetaobjectFieldConflict[];
+  /** Same key and type, but name/description/required/validations differ. */
+  changedFields: MetaobjectFieldDifference[];
+  /** In the target, absent from the source. Reported only, never deleted. */
+  extraFields: MetaobjectFieldDefinitionRecord[];
+  /** name/description/displayNameKey/publishable differences. */
+  definitionChanges: PropertyDifference[];
+}
+
+/** Whether an existing item has anything an import could actually apply. */
+export function hasApplicableUpdates(item: MetaobjectComparisonItem) {
+  return (
+    item.missingFields.length > 0 ||
+    item.changedFields.length > 0 ||
+    item.definitionChanges.length > 0
+  );
 }
 
 export interface DefinitionScanPreview {
@@ -148,10 +192,16 @@ export interface DefinitionScanPreview {
     existingMetaobjectDefinitions: number;
     missingMetaobjectFields: number;
     conflictingMetaobjectFields: number;
+    changedMetafieldDefinitions: number;
+    changedMetaobjectFields: number;
+    updatableMetaobjectDefinitions: number;
+    extraMetaobjectFields: number;
   };
   metafields: {
     missing: MetafieldDefinitionRecord[];
     existing: MetafieldDefinitionRecord[];
+    /** Existing, same type, but name/description/validations differ. */
+    changed: MetafieldDifference[];
     conflicts: MetafieldConflict[];
   };
   metaobjects: {
