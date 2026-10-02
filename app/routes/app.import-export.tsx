@@ -19,9 +19,12 @@ import {
   Icon,
   LinkButton,
   Pill,
+  Spinner,
   StatGrid,
   StatTile,
+  useRowFlash,
 } from "../components/easy-migrate-ui";
+import { ConflictDetailsButton } from "../components/conflict-details";
 import {
   DefinitionSelectionList,
   countSelection,
@@ -508,6 +511,11 @@ function ExportTab() {
   const [hasPreselected, setHasPreselected] = useState(false);
   const lastDownloadRef = useRef<string | null>(null);
   const hasRequestedLoadRef = useRef(false);
+  const {
+    containerRef: exportListRef,
+    flashKeys: flashedMetaobjectTypes,
+    flashRows,
+  } = useRowFlash<HTMLDivElement>();
 
   const isLoading = loadFetcher.state !== "idle";
   const isExporting = exportFetcher.state !== "idle";
@@ -559,24 +567,18 @@ function ExportTab() {
     triggerCsvDownload(exportResult.csv, exportResult.fileName);
   }, [exportResult]);
 
-  const requiredMetaobjectTypes = collectRequiredMetaobjectTypes({
-    metafields,
-    metaobjects,
-    selectedMetafieldKeys,
-    selectedMetaobjectTypes,
-  });
-
   const normalizedQuery = query.trim().toLowerCase();
-  const visibleMetaobjects = metaobjects.filter((item) => {
-    if (view === "metafields") {
-      return false;
-    }
 
+  function metaobjectMatchesQuery(item: ExportMetaobject) {
     return (
       !normalizedQuery ||
       `${item.name} ${item.type}`.toLowerCase().includes(normalizedQuery)
     );
-  });
+  }
+
+  const visibleMetaobjects = metaobjects.filter(
+    (item) => view !== "metafields" && metaobjectMatchesQuery(item),
+  );
   const visibleMetafields = metafields.filter((item) => {
     if (view === "metaobjects") {
       return false;
@@ -614,28 +616,83 @@ function ExportTab() {
     setOwnerFilter("all");
   }
 
-  const totalSelected =
-    selectedMetafieldKeys.length + selectedMetaobjectTypes.length;
+  // Only ticked rows that the filters leave on screen are exported. Every row
+  // starts ticked, so "Metafields only" would otherwise still export all the
+  // hidden metaobjects.
+  const exportMetaobjectTypes = visibleMetaobjects
+    .filter((item) => selectedMetaobjectTypes.includes(item.type))
+    .map((item) => item.type);
+  const exportMetafieldKeys = visibleMetafields
+    .filter((item) => selectedMetafieldKeys.includes(item.identifier))
+    .map((item) => item.identifier);
+  const exportCount = exportMetaobjectTypes.length + exportMetafieldKeys.length;
+  const visibleCount = visibleMetaobjects.length + visibleMetafields.length;
+  const hiddenSelectedCount =
+    selectedMetaobjectTypes.length + selectedMetafieldKeys.length - exportCount;
   const totalAvailable = metafields.length + metaobjects.length;
-  const allSelected = totalAvailable > 0 && totalSelected === totalAvailable;
+  const allVisibleSelected = visibleCount > 0 && exportCount === visibleCount;
 
-  function toggleAll() {
-    if (allSelected) {
-      setSelectedMetafieldKeys([]);
-      setSelectedMetaobjectTypes([]);
+  const requiredMetaobjectTypes = collectRequiredMetaobjectTypes({
+    metafields,
+    metaobjects,
+    selectedMetafieldKeys: exportMetafieldKeys,
+    selectedMetaobjectTypes: exportMetaobjectTypes,
+  });
+
+  function toggleAllVisible() {
+    const metaobjectTypes = visibleMetaobjects.map((item) => item.type);
+    const metafieldKeys = visibleMetafields.map((item) => item.identifier);
+
+    if (allVisibleSelected) {
+      setSelectedMetaobjectTypes((current) =>
+        current.filter((type) => !metaobjectTypes.includes(type)),
+      );
+      setSelectedMetafieldKeys((current) =>
+        current.filter((key) => !metafieldKeys.includes(key)),
+      );
       return;
     }
 
-    setSelectedMetafieldKeys(metafields.map((item) => item.identifier));
-    setSelectedMetaobjectTypes(metaobjects.map((item) => item.type));
+    setSelectedMetaobjectTypes((current) => [
+      ...new Set([...current, ...metaobjectTypes]),
+    ]);
+    setSelectedMetafieldKeys((current) => [
+      ...new Set([...current, ...metafieldKeys]),
+    ]);
+  }
+
+  // The added types are hidden in "Metafields only" or by the search, and
+  // hidden rows are not exported, so reveal them. Pinning the selection to
+  // what is exported first keeps hidden ticked rows from joining in.
+  function includeRequiredTypes() {
+    setSelectedMetafieldKeys(exportMetafieldKeys);
+    setSelectedMetaobjectTypes([
+      ...new Set([...exportMetaobjectTypes, ...requiredMetaobjectTypes]),
+    ]);
+
+    if (view === "metafields") {
+      setView("all");
+    }
+
+    const hiddenBySearch = metaobjects.some(
+      (item) =>
+        requiredMetaobjectTypes.includes(item.type) &&
+        !metaobjectMatchesQuery(item),
+    );
+
+    if (hiddenBySearch) {
+      setQuery("");
+    }
+
+    flashRows(requiredMetaobjectTypes);
   }
 
   function handleExport() {
     exportFetcher.submit(
       {
         intent: "export",
-        selectedMetafieldKeys: JSON.stringify(selectedMetafieldKeys),
-        selectedMetaobjectTypes: JSON.stringify(selectedMetaobjectTypes),
+        selectedMetafieldKeys: JSON.stringify(exportMetafieldKeys),
+        selectedMetaobjectTypes: JSON.stringify(exportMetaobjectTypes),
       },
       { method: "post" },
     );
@@ -645,7 +702,7 @@ function ExportTab() {
     return (
       <div className="em-card">
         <div className="em-center">
-          <Icon name="progress_activity" size={32} className="em-spin" />
+          <Spinner size={32} />
           <span className="em-body-sm">Reading definitions from this store…</span>
         </div>
       </div>
@@ -704,14 +761,7 @@ function ExportTab() {
             )}. Their reference fields will fail on import unless you include them.`}
           </p>
           <div className="em-row-inline">
-            <Button
-              size="sm"
-              onClick={() =>
-                setSelectedMetaobjectTypes((current) => [
-                  ...new Set([...current, ...requiredMetaobjectTypes]),
-                ])
-              }
-            >
+            <Button size="sm" onClick={includeRequiredTypes}>
               Include them
             </Button>
           </div>
@@ -723,7 +773,7 @@ function ExportTab() {
           <div className="em-row-between">
             <h3 className="em-section-heading">Select what to export</h3>
             <span className="em-label-caps">
-              {`${String(totalSelected)} of ${String(totalAvailable)} selected`}
+              {`${String(exportCount)} of ${String(visibleCount)} selected`}
             </span>
           </div>
           <div className="em-list-toolbar__row">
@@ -774,10 +824,10 @@ function ExportTab() {
             <input
               className="em-checkbox"
               type="checkbox"
-              checked={allSelected}
-              onChange={toggleAll}
-              disabled={isExporting}
-              aria-label="Select every definition"
+              checked={allVisibleSelected}
+              onChange={toggleAllVisible}
+              disabled={isExporting || visibleCount === 0}
+              aria-label="Select every definition shown"
             />
           </div>
           <div>Definition Name</div>
@@ -785,7 +835,7 @@ function ExportTab() {
           <div className="em-cell-right">Detail</div>
         </div>
 
-        <div className="em-list-scroll">
+        <div className="em-list-scroll" ref={exportListRef}>
           {visibleMetaobjects.length > 0 ? (
             <>
               <div className="em-group-row">
@@ -811,9 +861,13 @@ function ExportTab() {
                 return (
                   <label
                     key={item.type}
+                    data-flash-key={item.type}
                     className={[
                       "em-list-row em-grid-definitions",
                       checked ? "em-list-row--selected" : "",
+                      flashedMetaobjectTypes.includes(item.type)
+                        ? "em-list-row--flash"
+                        : "",
                     ]
                       .filter(Boolean)
                       .join(" ")}
@@ -945,10 +999,12 @@ function ExportTab() {
       <div className="em-actionbar">
         <div className="em-row-inline">
           <span className="em-actionbar__label">
-            {`${String(totalSelected)} definitions selected`}
+            {`${String(exportCount)} definitions to export`}
           </span>
           <span className="em-body-sm">
-            {`(from ${String(totalAvailable)} in this store)`}
+            {hiddenSelectedCount > 0
+              ? `(${String(hiddenSelectedCount)} ticked but hidden by filters, not included)`
+              : `(from ${String(totalAvailable)} in this store)`}
           </span>
         </div>
         <div className="em-row-inline">
@@ -957,7 +1013,7 @@ function ExportTab() {
             icon="download"
             onClick={handleExport}
             loading={isExporting}
-            disabled={totalSelected === 0}
+            disabled={exportCount === 0}
           >
             Download CSV
           </Button>
@@ -1432,6 +1488,12 @@ function ImportTab() {
             <Banner
               tone="critical"
               title={`${String(totalConflicts)} Conflicts Detected`}
+              titleAction={
+                <ConflictDetailsButton
+                  metafieldConflicts={preview?.metafields.conflicts ?? []}
+                  metaobjectConflicts={preview?.metaobjects.conflicts ?? []}
+                />
+              }
             >
               Some definitions already exist in this store with a different type.
               Easy Migrate skips them so nothing is overwritten.
@@ -1444,6 +1506,7 @@ function ImportTab() {
               item.
             </Banner>
           ) : null}
+
 
           {allSelectableCount > 0 ? (
             <DefinitionSelectionList

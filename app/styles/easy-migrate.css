@@ -449,8 +449,36 @@ textarea {
   }
 }
 
+.em-spinner {
+  display: inline-block;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: em-spin 0.8s linear infinite;
+}
+
+.em-spinner--18 {
+  width: 18px;
+  height: 18px;
+}
+
+.em-spinner--20 {
+  width: 20px;
+  height: 20px;
+}
+
+.em-spinner--32 {
+  width: 32px;
+  height: 32px;
+  border-width: 3px;
+  color: var(--em-primary);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .em-spin {
+  .em-spin,
+  .em-spinner {
     animation: none;
   }
 }
@@ -911,6 +939,29 @@ textarea {
   background: rgba(255, 218, 214, 0.3);
 }
 
+/* Rows an "Include them" button just ticked. */
+.em-list-row--flash {
+  animation: em-row-flash 2s ease-out;
+}
+
+@keyframes em-row-flash {
+  0%,
+  35% {
+    background-color: var(--em-secondary-container);
+  }
+
+  100% {
+    background-color: var(--em-surface);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .em-list-row--flash {
+    animation: none;
+    background-color: var(--em-secondary-container);
+  }
+}
+
 .em-list-row--disabled {
   background: var(--em-surface-container-low);
   opacity: 0.6;
@@ -1109,6 +1160,115 @@ textarea {
 .em-icon-lead {
   margin-top: 2px;
   flex-shrink: 0;
+}
+
+.em-banner__heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Sits on the tinted banner, so it inherits the banner text colour. */
+.em-banner__info {
+  padding: 1px;
+  color: inherit;
+  opacity: 0.8;
+}
+
+.em-banner__info:hover {
+  background: rgba(27, 36, 48, 0.08);
+  color: inherit;
+  opacity: 1;
+}
+
+.em-banner__info:focus-visible {
+  outline: 2px solid var(--em-primary);
+  outline-offset: 1px;
+  opacity: 1;
+}
+
+/* ── Conflict details ─────────────────────────────────────────────────── */
+
+.em-conflict-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--em-xs);
+}
+
+.em-conflict-group h4 {
+  margin: 0;
+}
+
+.em-conflict-list,
+.em-conflict-fields {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.em-conflict-list {
+  border: 1px solid var(--em-border);
+  border-radius: var(--em-radius-lg);
+}
+
+.em-conflict-item {
+  padding: var(--em-sm) var(--em-md);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.em-conflict-item + .em-conflict-item {
+  border-top: 1px solid var(--em-border);
+}
+
+.em-conflict-item__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--em-xs);
+}
+
+.em-conflict-item__key {
+  color: var(--em-secondary);
+  overflow-wrap: anywhere;
+}
+
+.em-conflict-fields {
+  margin-top: 4px;
+  gap: var(--em-xs);
+}
+
+.em-conflict-field {
+  border-left: 2px solid var(--em-error-outline);
+  padding-left: var(--em-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.em-conflict-types {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 2px var(--em-xs);
+  margin: 4px 0 0;
+}
+
+.em-conflict-types dt {
+  color: var(--em-secondary);
+}
+
+.em-conflict-types dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.em-code-chip--critical {
+  background: var(--em-error-container);
+  color: var(--em-on-error-container);
 }
 
 /* ── Empty state ──────────────────────────────────────────────────────── */
@@ -1599,6 +1759,108 @@ textarea {
   display: flex;
   justify-content: flex-end;
   gap: var(--em-sm);
+}
+
+/* ── Expandable card (see useExpandableCard) ──────────────────────────── */
+
+.em-expandable {
+  view-transition-name: em-expandable-card;
+}
+
+/* Twice the card's own size, but never past the window edges. */
+.em-card.em-expandable--expanded {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  z-index: 61;
+  width: min(var(--em-expand-width), calc(100vw - 32px));
+  height: min(var(--em-expand-height), calc(100vh - 32px));
+  box-shadow: var(--em-shadow-modal);
+}
+
+.em-expand-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(27, 36, 48, 0.45);
+}
+
+.em-expandable__footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--em-sm);
+  padding: var(--em-sm) var(--em-card-padding);
+  border-top: 1px solid var(--em-border);
+  background: var(--em-surface);
+}
+
+/* The card morphs; the rest of the page (and the backdrop) cross-fades. The
+   surface fill stops the page showing through while the two snapshots swap.
+   It sits on the group, not the image pair: the pair blends its snapshots
+   with plus-lighter, which would wash a fill inside it out to white. */
+::view-transition-group(em-expandable-card) {
+  animation-duration: 0.38s;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  border-radius: var(--em-radius-lg);
+  background: var(--em-surface);
+}
+
+/* Keep the content at its real size and crop it to the moving box, rather
+   than stretching the snapshot. */
+::view-transition-image-pair(em-expandable-card) {
+  overflow: clip;
+  border-radius: var(--em-radius-lg);
+}
+
+/* The two layouts differ (columns move), so a long cross-fade shows both at
+   once. Always show the big layout while the box moves: opening swaps to it
+   straight away, closing swaps away from it only at the very end, once the
+   box is nearly the small card's size. */
+::view-transition-old(em-expandable-card),
+::view-transition-new(em-expandable-card) {
+  height: 100%;
+  object-fit: none;
+  object-position: left top;
+  animation-duration: 0.15s;
+}
+
+/* Closing gets a longer, even ease. The opening curve front-loads the motion,
+   which reads well while growing but makes shrinking look like a snap. */
+:root[data-em-expand="close"]::view-transition-group(em-expandable-card) {
+  animation-duration: 0.48s;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+:root[data-em-expand="close"]::view-transition-old(root),
+:root[data-em-expand="close"]::view-transition-new(root) {
+  animation-duration: 0.48s;
+}
+
+:root[data-em-expand="close"]::view-transition-old(em-expandable-card) {
+  animation: em-vt-fade-out 0.12s linear 0.36s both;
+}
+
+:root[data-em-expand="close"]::view-transition-new(em-expandable-card) {
+  animation: em-vt-fade-in 0.12s linear 0.36s both;
+}
+
+@keyframes em-vt-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes em-vt-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.38s;
 }
 
 .em-icon-btn {

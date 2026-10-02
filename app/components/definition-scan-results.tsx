@@ -1,10 +1,20 @@
 import { useEffect, useState } from "react";
+import { findMissingReferencedMetaobjectTypes } from "../lib/definition-sync/metaobject-references.shared";
 import {
   hasApplicableUpdates,
   type DefinitionScanPreview,
   type MetaobjectComparisonItem,
 } from "../lib/definition-sync/types.shared";
-import { Button, EmptyState, Icon, LinkButton, Pill, StatusText } from "./easy-migrate-ui";
+import {
+  Banner,
+  Button,
+  EmptyState,
+  Icon,
+  LinkButton,
+  Pill,
+  StatusText,
+  useRowFlash,
+} from "./easy-migrate-ui";
 
 export interface DefinitionSelection {
   metaobjectTypes: string[];
@@ -121,6 +131,11 @@ export function DefinitionSelectionList({
     "all" | "metaobjects" | "metafields"
   >("all");
   const [metafieldOwnerFilter, setMetafieldOwnerFilter] = useState("all");
+  const {
+    containerRef: listScrollRef,
+    flashKeys: flashedMetaobjectTypes,
+    flashRows,
+  } = useRowFlash<HTMLDivElement>();
 
   useEffect(() => {
     setSelectionQuery("");
@@ -309,6 +324,38 @@ export function DefinitionSelectionList({
     setMetafieldKeys(allMetafieldsSelected ? [] : allMetafieldIdentifiers);
   }
 
+  const missingReferencedMetaobjectTypes = findMissingReferencedMetaobjectTypes({
+    preview,
+    selectedMetaobjectTypes,
+    selectedMetafieldKeys,
+  });
+
+  // Ticks the referenced metaobjects, then makes sure the rows are on screen
+  // so the new ticks are visible: the "Metafields only" view and the search
+  // can hide them.
+  function includeMissingReferencedTypes() {
+    const types = missingReferencedMetaobjectTypes;
+
+    setMetaobjectTypes([...new Set([...selectedMetaobjectTypes, ...types])]);
+
+    if (selectionView === "metafields") {
+      setSelectionView("all");
+    }
+
+    const hiddenBySearch = metaobjectRows.some(
+      (row) =>
+        types.includes(row.type) &&
+        Boolean(normalizedSelectionQuery) &&
+        !row.searchText.includes(normalizedSelectionQuery),
+    );
+
+    if (hiddenBySearch) {
+      setSelectionQuery("");
+    }
+
+    flashRows(types);
+  }
+
   function statusFor(action: "create" | "update" | "entries", isConflict: boolean) {
     if (isConflict) {
       return { tone: "critical" as const, label: "Conflict" };
@@ -326,222 +373,246 @@ export function DefinitionSelectionList({
   }
 
   return (
-    <div className="em-card em-card--flush em-list-card">
-      <div className="em-list-toolbar">
-        <div className="em-row-between">
-          <h3 className="em-section-heading">{title}</h3>
-          <span className="em-label-caps">
-            {`Showing ${String(visibleItemCount)} items`}
-          </span>
-        </div>
-        <div className="em-list-toolbar__row">
-          <div className="em-search">
-            <Icon name="search" className="em-search__icon" />
-            <input
-              className="em-input"
-              type="text"
-              value={selectionQuery}
-              onChange={(event) => setSelectionQuery(event.target.value)}
-              placeholder="Search namespaces, keys..."
-              aria-label="Search definitions"
-            />
+    <>
+      {missingReferencedMetaobjectTypes.length > 0 ? (
+        <Banner
+          tone="warning"
+          title="Missing referenced definitions"
+          action={
+            <Button
+              size="sm"
+              onClick={includeMissingReferencedTypes}
+              disabled={disabled}
+            >
+              Include them
+            </Button>
+          }
+        >
+          {`Selected definitions reference metaobject definitions that aren't on the destination store and aren't selected: ${missingReferencedMetaobjectTypes.join(
+            ", ",
+          )}. Their reference fields will fail unless you include them.`}
+        </Banner>
+      ) : null}
+
+      <div className="em-card em-card--flush em-list-card">
+        <div className="em-list-toolbar">
+          <div className="em-row-between">
+            <h3 className="em-section-heading">{title}</h3>
+            <span className="em-label-caps">
+              {`Showing ${String(visibleItemCount)} items`}
+            </span>
           </div>
-          <select
-            className="em-select"
-            style={{ width: 170 }}
-            value={selectionView}
-            onChange={(event) =>
-              setSelectionView(
-                event.target.value as "all" | "metaobjects" | "metafields",
-              )
-            }
-            disabled={disabled}
-            aria-label="Filter by definition type"
-          >
-            <option value="all">Everything</option>
-            <option value="metaobjects">Metaobjects only</option>
-            <option value="metafields">Metafields only</option>
-          </select>
-          <select
-            className="em-select"
-            style={{ width: 190 }}
-            value={metafieldOwnerFilter}
-            onChange={(event) => setMetafieldOwnerFilter(event.target.value)}
-            disabled={disabled || selectionView === "metaobjects"}
-            aria-label="Filter by metafield owner type"
-          >
-            {metafieldOwnerOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          <div className="em-list-toolbar__row">
+            <div className="em-search">
+              <Icon name="search" className="em-search__icon" />
+              <input
+                className="em-input"
+                type="text"
+                value={selectionQuery}
+                onChange={(event) => setSelectionQuery(event.target.value)}
+                placeholder="Search namespaces, keys..."
+                aria-label="Search definitions"
+              />
+            </div>
+            <select
+              className="em-select"
+              style={{ width: 170 }}
+              value={selectionView}
+              onChange={(event) =>
+                setSelectionView(
+                  event.target.value as "all" | "metaobjects" | "metafields",
+                )
+              }
+              disabled={disabled}
+              aria-label="Filter by definition type"
+            >
+              <option value="all">Everything</option>
+              <option value="metaobjects">Metaobjects only</option>
+              <option value="metafields">Metafields only</option>
+            </select>
+            <select
+              className="em-select"
+              style={{ width: 190 }}
+              value={metafieldOwnerFilter}
+              onChange={(event) => setMetafieldOwnerFilter(event.target.value)}
+              disabled={disabled || selectionView === "metaobjects"}
+              aria-label="Filter by metafield owner type"
+            >
+              {metafieldOwnerOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {supportsCopyContent ? (
+            <label className="em-checkbox-label">
+              <input
+                className="em-checkbox"
+                type="checkbox"
+                checked={isCopyingContent}
+                onChange={(event) => onCopyContentChange?.(event.target.checked)}
+                disabled={disabled}
+              />
+              Copy metaobject entries (content and values)
+            </label>
+          ) : null}
         </div>
-        {supportsCopyContent ? (
-          <label className="em-checkbox-label">
+
+        <div className="em-list-head em-grid-definitions">
+          <div className="em-cell-center">
             <input
               className="em-checkbox"
               type="checkbox"
-              checked={isCopyingContent}
-              onChange={(event) => onCopyContentChange?.(event.target.checked)}
+              checked={allSelected}
+              onChange={toggleSelectAll}
               disabled={disabled}
+              aria-label="Select every definition"
             />
-            Copy metaobject entries (content and values)
-          </label>
-        ) : null}
-      </div>
-
-      <div className="em-list-head em-grid-definitions">
-        <div className="em-cell-center">
-          <input
-            className="em-checkbox"
-            type="checkbox"
-            checked={allSelected}
-            onChange={toggleSelectAll}
-            disabled={disabled}
-            aria-label="Select every definition"
-          />
+          </div>
+          <div>Definition Name</div>
+          <div style={{ textAlign: "center" }}>Owner</div>
+          <div className="em-cell-right">Status</div>
         </div>
-        <div>Definition Name</div>
-        <div style={{ textAlign: "center" }}>Owner</div>
-        <div className="em-cell-right">Status</div>
-      </div>
 
-      <div className="em-list-scroll">
-        {visibleMetaobjectRows.length > 0 ? (
-          <>
-            <div className="em-group-row">
-              <span className="em-label-caps">Metaobject definitions</span>
-              <LinkButton onClick={toggleMetaobjectsSelectAll} disabled={disabled}>
-                {allMetaobjectsSelected ? "Clear all" : "Select all"}
-              </LinkButton>
-            </div>
-            {visibleMetaobjectRows.map((row) => {
-              const checked = selectedMetaobjectTypes.includes(row.type);
-              const status = statusFor(row.action, row.isConflict);
+        <div className="em-list-scroll" ref={listScrollRef}>
+          {visibleMetaobjectRows.length > 0 ? (
+            <>
+              <div className="em-group-row">
+                <span className="em-label-caps">Metaobject definitions</span>
+                <LinkButton onClick={toggleMetaobjectsSelectAll} disabled={disabled}>
+                  {allMetaobjectsSelected ? "Clear all" : "Select all"}
+                </LinkButton>
+              </div>
+              {visibleMetaobjectRows.map((row) => {
+                const checked = selectedMetaobjectTypes.includes(row.type);
+                const status = statusFor(row.action, row.isConflict);
 
-              return (
-                <label
-                  key={row.type}
-                  className={[
-                    "em-list-row em-grid-definitions",
-                    checked ? "em-list-row--selected" : "",
-                    row.isConflict ? "em-list-row--conflict" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
+                return (
+                  <label
+                    key={row.type}
+                    data-flash-key={row.type}
+                    className={[
+                      "em-list-row em-grid-definitions",
+                      checked ? "em-list-row--selected" : "",
+                      row.isConflict ? "em-list-row--conflict" : "",
+                      flashedMetaobjectTypes.includes(row.type) ? "em-list-row--flash" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  >
+                    <div className="em-cell-center">
+                      <input
+                        className="em-checkbox"
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleMetaobjectSelection(row.type)}
+                        disabled={disabled}
+                        aria-label={`Select ${row.name}`}
+                      />
+                    </div>
+                    <div className="em-cell-stack">
+                      <span className="em-body em-strong em-truncate">{row.name}</span>
+                      <span
+                        className="em-code em-truncate"
+                        style={{ color: "var(--em-secondary)" }}
+                      >
+                        {row.type}
+                      </span>
+                    </div>
+                    <div className="em-cell-center">
+                      <Pill tone="outline">METAOBJECT</Pill>
+                    </div>
+                    <div className="em-cell-right em-cell-stack">
+                      <StatusText tone={status.tone}>{status.label}</StatusText>
+                      {row.detail ? (
+                        <span className="em-body-sm em-truncate">{row.detail}</span>
+                      ) : null}
+                    </div>
+                  </label>
+                );
+              })}
+            </>
+          ) : null}
+
+          {visibleMetafieldRows.length > 0 ? (
+            <>
+              <div className="em-group-row">
+                <span className="em-label-caps">Metafield definitions</span>
+                <LinkButton onClick={toggleMetafieldsSelectAll} disabled={disabled}>
+                  {allMetafieldsSelected ? "Clear all" : "Select all"}
+                </LinkButton>
+              </div>
+              {visibleMetafieldRows.map((row) => {
+                const checked = selectedMetafieldKeys.includes(row.identifier);
+                const status = statusFor(row.action, row.isConflict);
+
+                return (
+                  <label
+                    key={row.identifier}
+                    className={[
+                      "em-list-row em-grid-definitions",
+                      checked ? "em-list-row--selected" : "",
+                      row.isConflict ? "em-list-row--conflict" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  >
+                    <div className="em-cell-center">
+                      <input
+                        className="em-checkbox"
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleMetafieldSelection(row.identifier)}
+                        disabled={disabled}
+                        aria-label={`Select ${row.name}`}
+                      />
+                    </div>
+                    <div className="em-cell-stack">
+                      <span className="em-body em-strong em-truncate">{row.name}</span>
+                      <span
+                        className="em-code em-truncate"
+                        style={{ color: "var(--em-secondary)" }}
+                      >
+                        {`${row.namespace}.${row.key}`}
+                      </span>
+                    </div>
+                    <div className="em-cell-center">
+                      <Pill tone="outline">{row.ownerType}</Pill>
+                    </div>
+                    <div className="em-cell-right em-cell-stack">
+                      <StatusText tone={status.tone}>{status.label}</StatusText>
+                      {row.detail ? (
+                        <span className="em-body-sm em-truncate">{row.detail}</span>
+                      ) : null}
+                    </div>
+                  </label>
+                );
+              })}
+            </>
+          ) : null}
+
+          {visibleItemCount === 0 ? (
+            <EmptyState
+              compact
+              icon="search_off"
+              title="No definitions match your search"
+              body="Try a different term, or clear the filters to see everything found in the scan."
+              action={
+                <Button
+                  onClick={() => {
+                    setSelectionQuery("");
+                    setSelectionView("all");
+                    setMetafieldOwnerFilter("all");
+                  }}
                 >
-                  <div className="em-cell-center">
-                    <input
-                      className="em-checkbox"
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleMetaobjectSelection(row.type)}
-                      disabled={disabled}
-                      aria-label={`Select ${row.name}`}
-                    />
-                  </div>
-                  <div className="em-cell-stack">
-                    <span className="em-body em-strong em-truncate">{row.name}</span>
-                    <span
-                      className="em-code em-truncate"
-                      style={{ color: "var(--em-secondary)" }}
-                    >
-                      {row.type}
-                    </span>
-                  </div>
-                  <div className="em-cell-center">
-                    <Pill tone="outline">METAOBJECT</Pill>
-                  </div>
-                  <div className="em-cell-right em-cell-stack">
-                    <StatusText tone={status.tone}>{status.label}</StatusText>
-                    {row.detail ? (
-                      <span className="em-body-sm em-truncate">{row.detail}</span>
-                    ) : null}
-                  </div>
-                </label>
-              );
-            })}
-          </>
-        ) : null}
-
-        {visibleMetafieldRows.length > 0 ? (
-          <>
-            <div className="em-group-row">
-              <span className="em-label-caps">Metafield definitions</span>
-              <LinkButton onClick={toggleMetafieldsSelectAll} disabled={disabled}>
-                {allMetafieldsSelected ? "Clear all" : "Select all"}
-              </LinkButton>
-            </div>
-            {visibleMetafieldRows.map((row) => {
-              const checked = selectedMetafieldKeys.includes(row.identifier);
-              const status = statusFor(row.action, row.isConflict);
-
-              return (
-                <label
-                  key={row.identifier}
-                  className={[
-                    "em-list-row em-grid-definitions",
-                    checked ? "em-list-row--selected" : "",
-                    row.isConflict ? "em-list-row--conflict" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                >
-                  <div className="em-cell-center">
-                    <input
-                      className="em-checkbox"
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleMetafieldSelection(row.identifier)}
-                      disabled={disabled}
-                      aria-label={`Select ${row.name}`}
-                    />
-                  </div>
-                  <div className="em-cell-stack">
-                    <span className="em-body em-strong em-truncate">{row.name}</span>
-                    <span
-                      className="em-code em-truncate"
-                      style={{ color: "var(--em-secondary)" }}
-                    >
-                      {`${row.namespace}.${row.key}`}
-                    </span>
-                  </div>
-                  <div className="em-cell-center">
-                    <Pill tone="outline">{row.ownerType}</Pill>
-                  </div>
-                  <div className="em-cell-right em-cell-stack">
-                    <StatusText tone={status.tone}>{status.label}</StatusText>
-                    {row.detail ? (
-                      <span className="em-body-sm em-truncate">{row.detail}</span>
-                    ) : null}
-                  </div>
-                </label>
-              );
-            })}
-          </>
-        ) : null}
-
-        {visibleItemCount === 0 ? (
-          <EmptyState
-            compact
-            icon="search_off"
-            title="No definitions match your search"
-            body="Try a different term, or clear the filters to see everything found in the scan."
-            action={
-              <Button
-                onClick={() => {
-                  setSelectionQuery("");
-                  setSelectionView("all");
-                  setMetafieldOwnerFilter("all");
-                }}
-              >
-                Clear filters
-              </Button>
-            }
-          />
-        ) : null}
+                  Clear filters
+                </Button>
+              }
+            />
+          ) : null}
+        </div>
       </div>
-    </div>
+    </>
   );
 }

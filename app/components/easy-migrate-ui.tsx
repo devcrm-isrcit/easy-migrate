@@ -1,4 +1,12 @@
-import { useEffect, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import { flushSync } from "react-dom";
 
 /*
  * Building blocks of the Easy Migrate design, ported from the Stitch screens.
@@ -32,6 +40,17 @@ export function Icon({
     >
       {name}
     </span>
+  );
+}
+
+// Pure CSS ring. An icon-font spinner shows its ligature name as text until
+// the 1 MB Material Symbols font arrives, which is exactly when loaders show.
+export function Spinner({ size = 20 }: { size?: 18 | 20 | 32 }) {
+  return (
+    <span
+      className={`em-spinner em-spinner--${size}`}
+      aria-hidden="true"
+    />
   );
 }
 
@@ -73,7 +92,7 @@ export function Button({
       disabled={disabled || loading}
     >
       {loading ? (
-        <Icon name="progress_activity" size={18} className="em-spin" />
+        <Spinner size={18} />
       ) : icon ? (
         <Icon name={icon} size={18} />
       ) : null}
@@ -166,11 +185,14 @@ export function Banner({
   title,
   children,
   action,
+  titleAction,
 }: {
   tone: "critical" | "warning" | "success" | "info";
   title: string;
   children?: ReactNode;
   action?: ReactNode;
+  /** Small control shown right after the title, such as an info button. */
+  titleAction?: ReactNode;
 }) {
   const iconName =
     tone === "critical"
@@ -185,7 +207,14 @@ export function Banner({
     <div className={`em-banner em-banner--${tone}`} role="status">
       <Icon name={iconName} className="em-icon-lead" filled />
       <div>
-        <h4 className="em-banner__title">{title}</h4>
+        {titleAction ? (
+          <div className="em-banner__heading">
+            <h4 className="em-banner__title">{title}</h4>
+            {titleAction}
+          </div>
+        ) : (
+          <h4 className="em-banner__title">{title}</h4>
+        )}
         {children ? <p className="em-banner__body">{children}</p> : null}
         {action ? <div className="em-banner__action">{action}</div> : null}
       </div>
@@ -333,6 +362,126 @@ export function Modal({
       </div>
     </div>
   );
+}
+
+/**
+ * Scrolls to and briefly highlights list rows, e.g. the rows an
+ * "Include them" button just ticked. Rows opt in with `data-flash-key`.
+ */
+export function useRowFlash<T extends HTMLElement>() {
+  const containerRef = useRef<T>(null);
+  const [flashKeys, setFlashKeys] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!flashKeys.length) {
+      return;
+    }
+
+    const firstRow = [
+      ...(containerRef.current?.querySelectorAll<HTMLElement>("[data-flash-key]") ??
+        []),
+    ].find((row) => flashKeys.includes(row.dataset.flashKey ?? ""));
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    firstRow?.scrollIntoView({
+      block: "nearest",
+      behavior: reduceMotion ? "auto" : "smooth",
+    });
+
+    const timer = window.setTimeout(() => setFlashKeys([]), 2000);
+    return () => window.clearTimeout(timer);
+  }, [flashKeys]);
+
+  return { containerRef, flashKeys, flashRows: setFlashKeys };
+}
+
+/**
+ * Lets a card grow into a centred dialog twice its size and shrink back. The
+ * same DOM node moves, so everything inside it (ticks, search, scroll) carries
+ * over. A view transition morphs between the two states where the browser
+ * supports one; elsewhere, and with reduced motion, it switches instantly.
+ *
+ * The card needs the `em-expandable` class, `cardRef` and `cardStyle`, and a
+ * placeholder of `placeholderHeight` so the page does not jump while it is out
+ * of the flow.
+ */
+export function useExpandableCard() {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [collapsedSize, setCollapsedSize] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+  const expanded = collapsedSize !== null;
+
+  const setExpanded = useCallback((next: boolean) => {
+    const card = cardRef.current;
+    if (!card) {
+      return;
+    }
+
+    const apply = () =>
+      flushSync(() =>
+        setCollapsedSize(
+          next ? { width: card.offsetWidth, height: card.offsetHeight } : null,
+        ),
+      );
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+
+    if (reduceMotion || typeof document.startViewTransition !== "function") {
+      apply();
+      return;
+    }
+
+    // Opening and closing swap the two layouts at different moments (see the
+    // CSS), so tell the stylesheet which way this one goes.
+    const root = document.documentElement;
+    root.dataset.emExpand = next ? "open" : "close";
+    document
+      .startViewTransition(apply)
+      .finished.finally(() => {
+        delete root.dataset.emExpand;
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!expanded) {
+      return;
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setExpanded(false);
+      }
+    }
+
+    const root = document.documentElement;
+    const previousOverflow = root.style.overflow;
+    root.style.overflow = "hidden";
+    document.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      root.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [expanded, setExpanded]);
+
+  const cardStyle = collapsedSize
+    ? ({
+        "--em-expand-width": `${String(collapsedSize.width * 2)}px`,
+        "--em-expand-height": `${String(collapsedSize.height * 2)}px`,
+      } as CSSProperties)
+    : undefined;
+
+  return {
+    expanded,
+    setExpanded,
+    cardRef,
+    cardStyle,
+    placeholderHeight: collapsedSize?.height ?? 0,
+  };
 }
 
 /** Formats a timestamp as "10 Aug 2026 at 4:32 PM". */

@@ -15,6 +15,7 @@ import {
   LinkButton,
   Modal,
   Pill,
+  Spinner,
   StatGrid,
   StatTile,
 } from "../components/easy-migrate-ui";
@@ -395,7 +396,7 @@ export default function FileMigrationPage() {
         {isInitializing ? (
           <div className="em-card">
             <div className="em-center">
-              <Icon name="progress_activity" size={32} className="em-spin" />
+              <Spinner size={32} />
               <span className="em-body-sm">
                 Verifying the saved source connection and loading the migration
                 preview.

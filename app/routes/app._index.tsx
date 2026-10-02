@@ -15,11 +15,15 @@ import {
   LinkButton,
   Modal,
   Pill,
+  Spinner,
   StatGrid,
   StatTile,
   StatusText,
   formatDateTime,
+  useExpandableCard,
+  useRowFlash,
 } from "../components/easy-migrate-ui";
+import { ConflictDetailsButton } from "../components/conflict-details";
 import {
   getLatestSyncJob,
 } from "../lib/definition-sync/logger.server";
@@ -34,6 +38,7 @@ import {
   normalizeShopDomain,
   validateShopDomain,
 } from "../lib/definition-sync/shop-domain.server";
+import { findMissingReferencedMetaobjectTypes } from "../lib/definition-sync/metaobject-references.shared";
 import type { DefinitionScanPreview as ServerDefinitionScanPreview } from "../lib/definition-sync/types.shared";
 import {
   clearStoredSourceCredential,
@@ -319,6 +324,12 @@ export default function DefinitionSyncDashboard() {
   const [metafieldOwnerFilter, setMetafieldOwnerFilter] = useState("all");
   const [scannedAt, setScannedAt] = useState<string | null>(null);
   const [showSourceToken, setShowSourceToken] = useState(false);
+  const {
+    containerRef: selectionListRef,
+    flashKeys: flashedMetaobjectTypes,
+    flashRows,
+  } = useRowFlash<HTMLDivElement>();
+  const selectionCard = useExpandableCard();
 
   useEffect(() => {
     const stored = readStoredSourceCredential(shop.myshopifyDomain);
@@ -702,7 +713,7 @@ export default function DefinitionSyncDashboard() {
         <div className="em-page">
           <div className="em-card">
             <div className="em-center">
-              <Icon name="progress_activity" size={32} className="em-spin" />
+              <Spinner size={32} />
               <span className="em-body-sm">Loading…</span>
             </div>
           </div>
@@ -722,6 +733,37 @@ export default function DefinitionSyncDashboard() {
   const conflictingMetaobjectTypes = new Set<string>(
     conflictingMetaobjects.map((item) => item.type),
   );
+  const missingReferencedMetaobjectTypes = preview
+    ? findMissingReferencedMetaobjectTypes({
+        preview,
+        selectedMetaobjectTypes,
+        selectedMetafieldKeys,
+      })
+    : [];
+
+  // Ticks the referenced metaobjects, then makes sure the rows are on screen
+  // so the new ticks are visible: they sit under "Metaobjects", which the
+  // "Metafields only" view and the search can hide.
+  function includeMissingReferencedTypes() {
+    const types = missingReferencedMetaobjectTypes;
+
+    setSelectedMetaobjectTypes((current) => [...new Set([...current, ...types])]);
+
+    if (selectionView === "metafields") {
+      setSelectionView("all");
+    }
+
+    const hiddenBySearch = types.some(
+      (type) => !filteredMissingMetaobjects.some((item) => item.type === type),
+    );
+
+    if (hiddenBySearch) {
+      setSelectionQuery("");
+    }
+
+    flashRows(types);
+  }
+
   const totalConflicts =
     (preview?.summary.conflictingMetafieldDefinitions ?? 0) +
     (preview?.summary.conflictingMetaobjectFields ?? 0);
@@ -754,7 +796,7 @@ export default function DefinitionSyncDashboard() {
               isSaving ? (
                 <div className="em-card">
                   <div className="em-center">
-                    <Icon name="progress_activity" size={32} className="em-spin" />
+                    <Spinner size={32} />
                     <span className="em-body-sm">
                       Verifying source store connection…
                     </span>
@@ -895,6 +937,12 @@ export default function DefinitionSyncDashboard() {
                       <Banner
                         tone="critical"
                         title={`${String(totalConflicts)} Conflicts Detected`}
+                        titleAction={
+                          <ConflictDetailsButton
+                            metafieldConflicts={conflictingMetafields}
+                            metaobjectConflicts={conflictingMetaobjects}
+                          />
+                        }
                       >
                         Some definitions exist on the destination store with
                         different types or validations. Easy Migrate skips them
@@ -954,17 +1002,92 @@ export default function DefinitionSyncDashboard() {
                       </Banner>
                     ) : null}
 
+                    {missingReferencedMetaobjectTypes.length > 0 ? (
+                      <Banner
+                        tone="warning"
+                        title="Missing referenced definitions"
+                        action={
+                          <Button
+                            size="sm"
+                            onClick={includeMissingReferencedTypes}
+                            disabled={isSyncing}
+                          >
+                            Include them
+                          </Button>
+                        }
+                      >
+                        {`Selected definitions reference metaobject definitions that aren't on the destination store and aren't selected: ${missingReferencedMetaobjectTypes.join(
+                          ", ",
+                        )}. Their reference fields will fail to sync unless you include them.`}
+                      </Banner>
+                    ) : null}
+
                     {/* ── Selection list ── */}
+                    {allSelectableCount > 0 && selectionCard.expanded ? (
+                      <>
+                        {/* Holds the card's place while it is out of the flow. */}
+                        <div
+                          style={{ height: selectionCard.placeholderHeight }}
+                          aria-hidden="true"
+                        />
+                        <div
+                          className="em-expand-backdrop"
+                          onClick={() => selectionCard.setExpanded(false)}
+                          aria-hidden="true"
+                        />
+                      </>
+                    ) : null}
                     {allSelectableCount > 0 ? (
-                      <div className="em-card em-card--flush em-list-card">
+                      <div
+                        ref={selectionCard.cardRef}
+                        className={[
+                          "em-card em-card--flush em-list-card em-expandable",
+                          selectionCard.expanded ? "em-expandable--expanded" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        style={selectionCard.cardStyle}
+                        role={selectionCard.expanded ? "dialog" : undefined}
+                        aria-modal={selectionCard.expanded || undefined}
+                        aria-label={
+                          selectionCard.expanded ? "Select what to copy" : undefined
+                        }
+                      >
                         <div className="em-list-toolbar">
                           <div className="em-row-between">
                             <h3 className="em-section-heading">
                               Select what to copy
                             </h3>
-                            <span className="em-label-caps">
-                              {`Showing ${String(visibleItemCount)} items`}
-                            </span>
+                            <div className="em-row-inline">
+                              <span className="em-label-caps">
+                                {`Showing ${String(visibleItemCount)} items`}
+                              </span>
+                              <button
+                                type="button"
+                                className="em-icon-btn"
+                                onClick={() =>
+                                  selectionCard.setExpanded(!selectionCard.expanded)
+                                }
+                                aria-label={
+                                  selectionCard.expanded
+                                    ? "Collapse list"
+                                    : "Expand list"
+                                }
+                                title={
+                                  selectionCard.expanded
+                                    ? "Collapse list"
+                                    : "Expand list"
+                                }
+                              >
+                                <Icon
+                                  name={
+                                    selectionCard.expanded
+                                      ? "close_fullscreen"
+                                      : "open_in_full"
+                                  }
+                                />
+                              </button>
+                            </div>
                           </div>
                           <div className="em-list-toolbar__row">
                             <div className="em-search">
@@ -1046,7 +1169,7 @@ export default function DefinitionSyncDashboard() {
                           <div className="em-cell-right">Status</div>
                         </div>
 
-                        <div className="em-list-scroll">
+                        <div className="em-list-scroll" ref={selectionListRef}>
                           {selectionView !== "metafields" &&
                           filteredMissingMetaobjects.length > 0 ? (
                             <>
@@ -1074,10 +1197,14 @@ export default function DefinitionSyncDashboard() {
                                 return (
                                   <label
                                     key={item.type}
+                                    data-flash-key={item.type}
                                     className={[
                                       "em-list-row em-grid-definitions",
                                       checked ? "em-list-row--selected" : "",
                                       isConflict ? "em-list-row--conflict" : "",
+                                      flashedMetaobjectTypes.includes(item.type)
+                                        ? "em-list-row--flash"
+                                        : "",
                                     ]
                                       .filter(Boolean)
                                       .join(" ")}
@@ -1275,6 +1402,20 @@ export default function DefinitionSyncDashboard() {
                             />
                           ) : null}
                         </div>
+
+                        {selectionCard.expanded ? (
+                          <div className="em-expandable__footer">
+                            <span className="em-body-sm">
+                              {`${String(totalSelectedCount)} definitions selected`}
+                            </span>
+                            <Button
+                              variant="primary"
+                              onClick={() => selectionCard.setExpanded(false)}
+                            >
+                              Done
+                            </Button>
+                          </div>
+                        ) : null}
                       </div>
                     ) : (
                       <Banner tone="success" title="Everything is already in sync">
