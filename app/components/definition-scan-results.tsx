@@ -13,6 +13,7 @@ import {
   LinkButton,
   Pill,
   StatusText,
+  useExpandableCard,
   useRowFlash,
 } from "./easy-migrate-ui";
 
@@ -115,6 +116,11 @@ interface DefinitionSelectionListProps {
   /** Omit to hide the entry-copy option entirely (a definitions CSV has none). */
   copyContent?: boolean;
   onCopyContentChange?: (value: boolean) => void;
+  /**
+   * Adds a button that grows the list into a large dialog. One per page: the
+   * dialog's animation is keyed to a single view-transition name.
+   */
+  expandable?: boolean;
 }
 
 export function DefinitionSelectionList({
@@ -125,6 +131,7 @@ export function DefinitionSelectionList({
   title = "Select what to copy",
   copyContent,
   onCopyContentChange,
+  expandable = false,
 }: DefinitionSelectionListProps) {
   const [selectionQuery, setSelectionQuery] = useState("");
   const [selectionView, setSelectionView] = useState<
@@ -136,6 +143,8 @@ export function DefinitionSelectionList({
     flashKeys: flashedMetaobjectTypes,
     flashRows,
   } = useRowFlash<HTMLDivElement>();
+  const expandCard = useExpandableCard();
+  const expanded = expandable && expandCard.expanded;
 
   useEffect(() => {
     setSelectionQuery("");
@@ -394,13 +403,51 @@ export function DefinitionSelectionList({
         </Banner>
       ) : null}
 
-      <div className="em-card em-card--flush em-list-card">
+      {expanded ? (
+        <>
+          {/* Holds the card's place while it is out of the flow. */}
+          <div style={{ height: expandCard.placeholderHeight }} aria-hidden="true" />
+          <div
+            className="em-expand-backdrop"
+            onClick={() => expandCard.setExpanded(false)}
+            aria-hidden="true"
+          />
+        </>
+      ) : null}
+
+      <div
+        ref={expandable ? expandCard.cardRef : undefined}
+        className={[
+          "em-card em-card--flush em-list-card",
+          expandable ? "em-expandable" : "",
+          expanded ? "em-expandable--expanded" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        style={expandable ? expandCard.cardStyle : undefined}
+        role={expanded ? "dialog" : undefined}
+        aria-modal={expanded || undefined}
+        aria-label={expanded ? title : undefined}
+      >
         <div className="em-list-toolbar">
           <div className="em-row-between">
             <h3 className="em-section-heading">{title}</h3>
-            <span className="em-label-caps">
-              {`Showing ${String(visibleItemCount)} items`}
-            </span>
+            <div className="em-row-inline">
+              <span className="em-label-caps">
+                {`Showing ${String(visibleItemCount)} items`}
+              </span>
+              {expandable ? (
+                <button
+                  type="button"
+                  className="em-icon-btn"
+                  onClick={() => expandCard.setExpanded(!expanded)}
+                  aria-label={expanded ? "Collapse list" : "Expand list"}
+                  title={expanded ? "Collapse list" : "Expand list"}
+                >
+                  <Icon name={expanded ? "close_fullscreen" : "open_in_full"} />
+                </button>
+              ) : null}
+            </div>
           </div>
           <div className="em-list-toolbar__row">
             <div className="em-search">
@@ -612,6 +659,17 @@ export function DefinitionSelectionList({
             />
           ) : null}
         </div>
+
+        {expanded ? (
+          <div className="em-expandable__footer">
+            <span className="em-body-sm">
+              {`${String(totalSelectedCount)} definitions selected`}
+            </span>
+            <Button variant="primary" onClick={() => expandCard.setExpanded(false)}>
+              Done
+            </Button>
+          </div>
+        ) : null}
       </div>
     </>
   );

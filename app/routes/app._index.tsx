@@ -18,12 +18,14 @@ import {
   Spinner,
   StatGrid,
   StatTile,
-  StatusText,
   formatDateTime,
-  useExpandableCard,
-  useRowFlash,
 } from "../components/easy-migrate-ui";
 import { ConflictDetailsButton } from "../components/conflict-details";
+import {
+  DefinitionSelectionList,
+  countSelection,
+  getSelectableDefinitions,
+} from "../components/definition-scan-results";
 import {
   SyncProgressPanel,
   useSyncProgress,
@@ -43,7 +45,6 @@ import {
   normalizeShopDomain,
   validateShopDomain,
 } from "../lib/definition-sync/shop-domain.server";
-import { findMissingReferencedMetaobjectTypes } from "../lib/definition-sync/metaobject-references.shared";
 import { startSyncProgress } from "../lib/definition-sync/progress.server";
 import type { DefinitionScanPreview as ServerDefinitionScanPreview } from "../lib/definition-sync/types.shared";
 import {
@@ -332,20 +333,8 @@ export default function DefinitionSyncDashboard() {
   const [copyContent, setCopyContent] = useState(false);
   const [showConnectionForm, setShowConnectionForm] = useState(true);
   const [credentialsLoaded, setCredentialsLoaded] = useState(false);
-  const [selectionQuery, setSelectionQuery] = useState("");
-  const [selectionView, setSelectionView] = useState<
-    "all" | "metaobjects" | "metafields"
-  >("all");
-  const [metafieldOwnerFilter, setMetafieldOwnerFilter] = useState("all");
   const [scannedAt, setScannedAt] = useState<string | null>(null);
   const [showSourceToken, setShowSourceToken] = useState(false);
-  const {
-    containerRef: selectionListRef,
-    flashKeys: flashedMetaobjectTypes,
-    flashRows,
-  } = useRowFlash<HTMLDivElement>();
-  const selectionCard = useExpandableCard();
-
   useEffect(() => {
     const stored = readStoredSourceCredential(shop.myshopifyDomain);
     if (stored) {
@@ -406,9 +395,6 @@ export default function DefinitionSyncDashboard() {
   useEffect(() => {
     setSelectedMetaobjectTypes([]);
     setSelectedMetafieldKeys([]);
-    setSelectionQuery("");
-    setSelectionView("all");
-    setMetafieldOwnerFilter("all");
     setScannedAt(preview ? new Date().toISOString() : null);
   }, [preview]);
 
@@ -475,159 +461,18 @@ export default function DefinitionSyncDashboard() {
     });
   }, [syncData, syncProgress.visible]);
 
-  const missingMetaobjects = preview?.metaobjects.missing ?? [];
-  const existingMetaobjects = preview?.metaobjects.existing ?? [];
-  const missingMetafields = preview?.metafields.missing ?? [];
   const hasConnectionDraft = sourceShop.trim().length > 0 || sourceToken.trim().length > 0;
   const hasVerifiedConnection =
     sourceShop.trim().length > 0 &&
     sourceToken.trim().length > 0 &&
     tokenStatus === "valid";
-  const normalizedSelectionQuery = selectionQuery.trim().toLowerCase();
   const totalSelectedCount =
     selectedMetaobjectTypes.length + selectedMetafieldKeys.length;
-  const allSelectableTypes = [
-    ...missingMetaobjects.map((i) => i.type),
-    ...(copyContent ? existingMetaobjects.map((i) => i.source.type) : []),
-  ];
-  const allSelectableCount = allSelectableTypes.length + missingMetafields.length;
-  const allSelected =
-    allSelectableCount > 0 && totalSelectedCount === allSelectableCount;
-  const missingMetaobjectTypes = missingMetaobjects.map((item) => item.type);
-  const existingMetaobjectTypes = copyContent
-    ? existingMetaobjects.map((item) => item.source.type)
-    : [];
-  const missingMetafieldIdentifiers = missingMetafields.map(
-    (item) => `${item.ownerType}:${item.namespace}:${item.key}`,
+  // Missing definitions to create plus existing ones that differ, as the list
+  // shows them.
+  const allSelectableCount = countSelection(
+    getSelectableDefinitions(preview, copyContent),
   );
-  const allMissingMetaobjectsSelected =
-    missingMetaobjectTypes.length > 0 &&
-    missingMetaobjectTypes.every((type) =>
-      selectedMetaobjectTypes.includes(type),
-    );
-  const allExistingMetaobjectsSelected =
-    existingMetaobjectTypes.length > 0 &&
-    existingMetaobjectTypes.every((type) =>
-      selectedMetaobjectTypes.includes(type),
-    );
-  const allMissingMetafieldsSelected =
-    missingMetafieldIdentifiers.length > 0 &&
-    missingMetafieldIdentifiers.every((id) =>
-      selectedMetafieldKeys.includes(id),
-    );
-  const missingMetafieldsByOwnerType = missingMetafields.reduce<
-    Array<{
-      ownerType: string;
-      items: typeof missingMetafields;
-    }>
-  >((groups, item) => {
-    const existingGroup = groups.find(
-      (group) => group.ownerType === item.ownerType,
-    );
-
-    if (existingGroup) {
-      existingGroup.items.push(item);
-      return groups;
-    }
-
-    groups.push({
-      ownerType: item.ownerType,
-      items: [item],
-    });
-    return groups;
-  }, []);
-  const metafieldOwnerOptions = [
-    { label: "All owner types", value: "all" },
-    ...missingMetafieldsByOwnerType.map((group) => ({
-      label: `${group.ownerType} (${group.items.length})`,
-      value: group.ownerType,
-    })),
-  ];
-  const filteredMissingMetaobjects = missingMetaobjects.filter((item) => {
-    if (!normalizedSelectionQuery) {
-      return true;
-    }
-
-    return [
-      item.name,
-      item.type,
-      ...item.fieldDefinitions.map((field) => `${field.name} ${field.key}`),
-    ]
-      .join(" ")
-      .toLowerCase()
-      .includes(normalizedSelectionQuery);
-  });
-  const filteredExistingMetaobjects = existingMetaobjects.filter((item) => {
-    if (!normalizedSelectionQuery) {
-      return true;
-    }
-
-    return [
-      item.source.name,
-      item.source.type,
-      ...item.source.fieldDefinitions.map(
-        (field) => `${field.name} ${field.key}`,
-      ),
-    ]
-      .join(" ")
-      .toLowerCase()
-      .includes(normalizedSelectionQuery);
-  });
-  const filteredMissingMetafields = missingMetafields.filter((item) => {
-    if (
-      metafieldOwnerFilter !== "all" &&
-      item.ownerType !== metafieldOwnerFilter
-    ) {
-      return false;
-    }
-
-    if (!normalizedSelectionQuery) {
-      return true;
-    }
-
-    return [item.name, item.namespace, item.key, item.type, item.ownerType]
-      .join(" ")
-      .toLowerCase()
-      .includes(normalizedSelectionQuery);
-  });
-  const visibleMetaobjectTypes = [
-    ...filteredMissingMetaobjects.map((item) => item.type),
-    ...(copyContent
-      ? filteredExistingMetaobjects.map((item) => item.source.type)
-      : []),
-  ];
-  const visibleMetafieldIdentifiers = filteredMissingMetafields.map(
-    (item) => `${item.ownerType}:${item.namespace}:${item.key}`,
-  );
-  const metafieldNameByIdentifier = new Map<string, string>();
-  const metaobjectNameByType = new Map<string, string>();
-  const metaobjectFieldNameByIdentifier = new Map<string, string>();
-
-  if (preview) {
-    for (const def of [
-      ...preview.metafields.missing,
-      ...preview.metafields.existing,
-      ...preview.metafields.conflicts.map((c) => c.source),
-    ]) {
-      metafieldNameByIdentifier.set(
-        `${(def as any).ownerType}:${(def as any).namespace}:${(def as any).key}`,
-        def.name,
-      );
-    }
-    for (const def of [
-      ...preview.metaobjects.missing,
-      ...preview.metaobjects.existing.map((i) => i.source),
-      ...preview.metaobjects.conflicts.map((i) => i.source),
-    ]) {
-      metaobjectNameByType.set(def.type, def.name);
-      for (const field of def.fieldDefinitions) {
-        metaobjectFieldNameByIdentifier.set(
-          `${def.type}.${field.key}`,
-          `${def.name} — ${field.name}`,
-        );
-      }
-    }
-  }
 
   function handleSave() {
     const formData = connectionFormRef.current
@@ -680,60 +525,9 @@ export default function DefinitionSyncDashboard() {
     syncFetcher.submit(fd, { method: "post" });
   }
 
-  function toggleMetaobjectSelection(type: string) {
-    setSelectedMetaobjectTypes((c) =>
-      c.includes(type) ? c.filter((v) => v !== type) : [...c, type],
-    );
-  }
-
-  function toggleMetafieldSelection(id: string) {
-    setSelectedMetafieldKeys((c) =>
-      c.includes(id) ? c.filter((v) => v !== id) : [...c, id],
-    );
-  }
-
-  function toggleSelectAll() {
-    if (allSelected) {
-      setSelectedMetaobjectTypes([]);
-      setSelectedMetafieldKeys([]);
-    } else {
-      setSelectedMetaobjectTypes(allSelectableTypes);
-      setSelectedMetafieldKeys(
-        missingMetafields.map(
-          (i) => `${i.ownerType}:${i.namespace}:${i.key}`,
-        ),
-      );
-    }
-  }
-
-  function toggleMissingMetaobjectsSelectAll() {
-    setSelectedMetaobjectTypes((current) => {
-      if (allMissingMetaobjectsSelected) {
-        return current.filter((type) => !missingMetaobjectTypes.includes(type));
-      }
-
-      return [...new Set([...current, ...missingMetaobjectTypes])];
-    });
-  }
-
-  function toggleExistingMetaobjectsSelectAll() {
-    setSelectedMetaobjectTypes((current) => {
-      if (allExistingMetaobjectsSelected) {
-        return current.filter((type) => !existingMetaobjectTypes.includes(type));
-      }
-
-      return [...new Set([...current, ...existingMetaobjectTypes])];
-    });
-  }
-
-  function toggleMissingMetafieldsSelectAll() {
-    setSelectedMetafieldKeys((current) => {
-      if (allMissingMetafieldsSelected) {
-        return current.filter((id) => !missingMetafieldIdentifiers.includes(id));
-      }
-
-      return [...new Set([...current, ...missingMetafieldIdentifiers])];
-    });
+  function clearSelection() {
+    setSelectedMetaobjectTypes([]);
+    setSelectedMetafieldKeys([]);
   }
 
   if (!credentialsLoaded) {
@@ -753,51 +547,9 @@ export default function DefinitionSyncDashboard() {
 
   const conflictingMetafields = preview?.metafields.conflicts ?? [];
   const conflictingMetaobjects = preview?.metaobjects.conflicts ?? [];
-  const conflictKeys = new Set<string>([
-    ...conflictingMetafields.map(
-      (conflict) =>
-        `${conflict.source.ownerType}:${conflict.source.namespace}:${conflict.source.key}`,
-    ),
-  ]);
-  const conflictingMetaobjectTypes = new Set<string>(
-    conflictingMetaobjects.map((item) => item.type),
-  );
-  const missingReferencedMetaobjectTypes = preview
-    ? findMissingReferencedMetaobjectTypes({
-        preview,
-        selectedMetaobjectTypes,
-        selectedMetafieldKeys,
-      })
-    : [];
-
-  // Ticks the referenced metaobjects, then makes sure the rows are on screen
-  // so the new ticks are visible: they sit under "Metaobjects", which the
-  // "Metafields only" view and the search can hide.
-  function includeMissingReferencedTypes() {
-    const types = missingReferencedMetaobjectTypes;
-
-    setSelectedMetaobjectTypes((current) => [...new Set([...current, ...types])]);
-
-    if (selectionView === "metafields") {
-      setSelectionView("all");
-    }
-
-    const hiddenBySearch = types.some(
-      (type) => !filteredMissingMetaobjects.some((item) => item.type === type),
-    );
-
-    if (hiddenBySearch) {
-      setSelectionQuery("");
-    }
-
-    flashRows(types);
-  }
-
   const totalConflicts =
     (preview?.summary.conflictingMetafieldDefinitions ?? 0) +
     (preview?.summary.conflictingMetaobjectFields ?? 0);
-  const visibleItemCount =
-    visibleMetaobjectTypes.length + visibleMetafieldIdentifiers.length;
   const syncFailed = syncData?.intent === "sync" && !syncData.ok;
   const syncSucceeded = syncData?.intent === "sync" && syncData.ok;
   // Items fail individually without throwing, so a resolved sync is not
@@ -947,6 +699,13 @@ export default function DefinitionSyncDashboard() {
                             value={preview.summary.missingMetaobjectFields}
                           />
                           <StatTile
+                            label="To update"
+                            value={
+                              preview.summary.updatableMetaobjectDefinitions +
+                              preview.summary.changedMetafieldDefinitions
+                            }
+                          />
+                          <StatTile
                             label="Conflicts"
                             value={totalConflicts}
                             tone="critical"
@@ -1044,428 +803,29 @@ export default function DefinitionSyncDashboard() {
                       />
                     ) : null}
 
-                    {!syncProgress.visible &&
-                    missingReferencedMetaobjectTypes.length > 0 ? (
-                      <Banner
-                        tone="warning"
-                        title="Missing referenced definitions"
-                        action={
-                          <Button
-                            size="sm"
-                            onClick={includeMissingReferencedTypes}
-                            disabled={isSyncing}
-                          >
-                            Include them
-                          </Button>
-                        }
-                      >
-                        {`Selected definitions reference metaobject definitions that aren't on the destination store and aren't selected: ${missingReferencedMetaobjectTypes.join(
-                          ", ",
-                        )}. Their reference fields will fail to sync unless you include them.`}
-                      </Banner>
-                    ) : null}
 
                     {/* ── Selection list ── */}
-                    {!syncProgress.visible &&
-                    allSelectableCount > 0 &&
-                    selectionCard.expanded ? (
-                      <>
-                        {/* Holds the card's place while it is out of the flow. */}
-                        <div
-                          style={{ height: selectionCard.placeholderHeight }}
-                          aria-hidden="true"
-                        />
-                        <div
-                          className="em-expand-backdrop"
-                          onClick={() => selectionCard.setExpanded(false)}
-                          aria-hidden="true"
-                        />
-                      </>
-                    ) : null}
                     {syncProgress.visible ? null : allSelectableCount > 0 ? (
-                      <div
-                        ref={selectionCard.cardRef}
-                        className={[
-                          "em-card em-card--flush em-list-card em-expandable",
-                          selectionCard.expanded ? "em-expandable--expanded" : "",
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                        style={selectionCard.cardStyle}
-                        role={selectionCard.expanded ? "dialog" : undefined}
-                        aria-modal={selectionCard.expanded || undefined}
-                        aria-label={
-                          selectionCard.expanded ? "Select what to copy" : undefined
-                        }
-                      >
-                        <div className="em-list-toolbar">
-                          <div className="em-row-between">
-                            <h3 className="em-section-heading">
-                              Select what to copy
-                            </h3>
-                            <div className="em-row-inline">
-                              <span className="em-label-caps">
-                                {`Showing ${String(visibleItemCount)} items`}
-                              </span>
-                              <button
-                                type="button"
-                                className="em-icon-btn"
-                                onClick={() =>
-                                  selectionCard.setExpanded(!selectionCard.expanded)
-                                }
-                                aria-label={
-                                  selectionCard.expanded
-                                    ? "Collapse list"
-                                    : "Expand list"
-                                }
-                                title={
-                                  selectionCard.expanded
-                                    ? "Collapse list"
-                                    : "Expand list"
-                                }
-                              >
-                                <Icon
-                                  name={
-                                    selectionCard.expanded
-                                      ? "close_fullscreen"
-                                      : "open_in_full"
-                                  }
-                                />
-                              </button>
-                            </div>
-                          </div>
-                          <div className="em-list-toolbar__row">
-                            <div className="em-search">
-                              <Icon name="search" className="em-search__icon" />
-                              <input
-                                className="em-input"
-                                type="text"
-                                value={selectionQuery}
-                                onChange={(event) =>
-                                  setSelectionQuery(event.target.value)
-                                }
-                                placeholder="Search namespaces, keys..."
-                                aria-label="Search definitions"
-                              />
-                            </div>
-                            <select
-                              className="em-select"
-                              style={{ width: 170 }}
-                              value={selectionView}
-                              onChange={(event) =>
-                                setSelectionView(
-                                  event.target.value as
-                                    | "all"
-                                    | "metaobjects"
-                                    | "metafields",
-                                )
-                              }
-                              disabled={isSyncing}
-                              aria-label="Filter by definition type"
-                            >
-                              <option value="all">Everything</option>
-                              <option value="metaobjects">Metaobjects only</option>
-                              <option value="metafields">Metafields only</option>
-                            </select>
-                            <select
-                              className="em-select"
-                              style={{ width: 190 }}
-                              value={metafieldOwnerFilter}
-                              onChange={(event) =>
-                                setMetafieldOwnerFilter(event.target.value)
-                              }
-                              disabled={isSyncing || selectionView === "metaobjects"}
-                              aria-label="Filter by metafield owner type"
-                            >
-                              {metafieldOwnerOptions.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <label className="em-checkbox-label">
-                            <input
-                              className="em-checkbox"
-                              type="checkbox"
-                              checked={copyContent}
-                              onChange={(event) =>
-                                setCopyContent(event.target.checked)
-                              }
-                              disabled={isSyncing}
-                            />
-                            Copy metaobject entries (content and values)
-                          </label>
-                        </div>
-
-                        <div className="em-list-head em-grid-definitions">
-                          <div className="em-cell-center">
-                            <input
-                              className="em-checkbox"
-                              type="checkbox"
-                              checked={allSelected}
-                              onChange={toggleSelectAll}
-                              disabled={isSyncing}
-                              aria-label="Select every definition"
-                            />
-                          </div>
-                          <div>Definition Name</div>
-                          <div style={{ textAlign: "center" }}>Owner</div>
-                          <div className="em-cell-right">Status</div>
-                        </div>
-
-                        <div className="em-list-scroll" ref={selectionListRef}>
-                          {selectionView !== "metafields" &&
-                          filteredMissingMetaobjects.length > 0 ? (
-                            <>
-                              <div className="em-group-row">
-                                <span className="em-label-caps">
-                                  Metaobject definitions
-                                </span>
-                                <LinkButton
-                                  onClick={toggleMissingMetaobjectsSelectAll}
-                                  disabled={isSyncing}
-                                >
-                                  {allMissingMetaobjectsSelected
-                                    ? "Clear all"
-                                    : "Select all"}
-                                </LinkButton>
-                              </div>
-                              {filteredMissingMetaobjects.map((item) => {
-                                const checked = selectedMetaobjectTypes.includes(
-                                  item.type,
-                                );
-                                const isConflict = conflictingMetaobjectTypes.has(
-                                  item.type,
-                                );
-
-                                return (
-                                  <label
-                                    key={item.type}
-                                    data-flash-key={item.type}
-                                    className={[
-                                      "em-list-row em-grid-definitions",
-                                      checked ? "em-list-row--selected" : "",
-                                      isConflict ? "em-list-row--conflict" : "",
-                                      flashedMetaobjectTypes.includes(item.type)
-                                        ? "em-list-row--flash"
-                                        : "",
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" ")}
-                                  >
-                                    <div className="em-cell-center">
-                                      <input
-                                        className="em-checkbox"
-                                        type="checkbox"
-                                        checked={checked}
-                                        onChange={() =>
-                                          toggleMetaobjectSelection(item.type)
-                                        }
-                                        disabled={isSyncing}
-                                        aria-label={`Select ${item.name}`}
-                                      />
-                                    </div>
-                                    <div className="em-cell-stack">
-                                      <span className="em-body em-strong em-truncate">
-                                        {item.name}
-                                      </span>
-                                      <span className="em-code em-truncate" style={{ color: "var(--em-secondary)" }}>
-                                        {item.type}
-                                      </span>
-                                    </div>
-                                    <div className="em-cell-center">
-                                      <Pill tone="outline">METAOBJECT</Pill>
-                                    </div>
-                                    <div className="em-cell-right">
-                                      <StatusText
-                                        tone={isConflict ? "critical" : "warning"}
-                                      >
-                                        {isConflict ? "Conflict" : "Missing"}
-                                      </StatusText>
-                                    </div>
-                                  </label>
-                                );
-                              })}
-                            </>
-                          ) : null}
-
-                          {selectionView !== "metafields" &&
-                          copyContent &&
-                          filteredExistingMetaobjects.length > 0 ? (
-                            <>
-                              <div className="em-group-row">
-                                <span className="em-label-caps">
-                                  Metaobject entries
-                                </span>
-                                <LinkButton
-                                  onClick={toggleExistingMetaobjectsSelectAll}
-                                  disabled={isSyncing}
-                                >
-                                  {allExistingMetaobjectsSelected
-                                    ? "Clear all"
-                                    : "Select all"}
-                                </LinkButton>
-                              </div>
-                              {filteredExistingMetaobjects.map((item) => {
-                                const checked = selectedMetaobjectTypes.includes(
-                                  item.source.type,
-                                );
-
-                                return (
-                                  <label
-                                    key={item.source.type}
-                                    className={[
-                                      "em-list-row em-grid-definitions",
-                                      checked ? "em-list-row--selected" : "",
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" ")}
-                                  >
-                                    <div className="em-cell-center">
-                                      <input
-                                        className="em-checkbox"
-                                        type="checkbox"
-                                        checked={checked}
-                                        onChange={() =>
-                                          toggleMetaobjectSelection(
-                                            item.source.type,
-                                          )
-                                        }
-                                        disabled={isSyncing}
-                                        aria-label={`Select ${item.source.name}`}
-                                      />
-                                    </div>
-                                    <div className="em-cell-stack">
-                                      <span className="em-body em-strong em-truncate">
-                                        {item.source.name}
-                                      </span>
-                                      <span className="em-code em-truncate" style={{ color: "var(--em-secondary)" }}>
-                                        {item.source.type}
-                                      </span>
-                                    </div>
-                                    <div className="em-cell-center">
-                                      <Pill tone="outline">ENTRIES</Pill>
-                                    </div>
-                                    <div className="em-cell-right">
-                                      <StatusText tone="secondary">
-                                        In target
-                                      </StatusText>
-                                    </div>
-                                  </label>
-                                );
-                              })}
-                            </>
-                          ) : null}
-
-                          {selectionView !== "metaobjects" &&
-                          filteredMissingMetafields.length > 0 ? (
-                            <>
-                              <div className="em-group-row">
-                                <span className="em-label-caps">
-                                  Metafield definitions
-                                </span>
-                                <LinkButton
-                                  onClick={toggleMissingMetafieldsSelectAll}
-                                  disabled={isSyncing}
-                                >
-                                  {allMissingMetafieldsSelected
-                                    ? "Clear all"
-                                    : "Select all"}
-                                </LinkButton>
-                              </div>
-                              {filteredMissingMetafields.map((item) => {
-                                const identifier = `${item.ownerType}:${item.namespace}:${item.key}`;
-                                const checked =
-                                  selectedMetafieldKeys.includes(identifier);
-                                const isConflict = conflictKeys.has(identifier);
-
-                                return (
-                                  <label
-                                    key={identifier}
-                                    className={[
-                                      "em-list-row em-grid-definitions",
-                                      checked ? "em-list-row--selected" : "",
-                                      isConflict ? "em-list-row--conflict" : "",
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" ")}
-                                  >
-                                    <div className="em-cell-center">
-                                      <input
-                                        className="em-checkbox"
-                                        type="checkbox"
-                                        checked={checked}
-                                        onChange={() =>
-                                          toggleMetafieldSelection(identifier)
-                                        }
-                                        disabled={isSyncing}
-                                        aria-label={`Select ${item.name}`}
-                                      />
-                                    </div>
-                                    <div className="em-cell-stack">
-                                      <span className="em-body em-strong em-truncate">
-                                        {item.name}
-                                      </span>
-                                      <span className="em-code em-truncate" style={{ color: "var(--em-secondary)" }}>
-                                        {`${item.namespace}.${item.key}`}
-                                      </span>
-                                    </div>
-                                    <div className="em-cell-center">
-                                      <Pill tone="outline">{item.ownerType}</Pill>
-                                    </div>
-                                    <div className="em-cell-right">
-                                      <StatusText
-                                        tone={isConflict ? "critical" : "warning"}
-                                      >
-                                        {isConflict ? "Conflict" : "Missing"}
-                                      </StatusText>
-                                    </div>
-                                  </label>
-                                );
-                              })}
-                            </>
-                          ) : null}
-
-                          {visibleItemCount === 0 ? (
-                            <EmptyState
-                              compact
-                              icon="search_off"
-                              title="No definitions match your search"
-                              body="Try a different term, or clear the filters to see everything found in the scan."
-                              action={
-                                <Button
-                                  onClick={() => {
-                                    setSelectionQuery("");
-                                    setSelectionView("all");
-                                    setMetafieldOwnerFilter("all");
-                                  }}
-                                >
-                                  Clear filters
-                                </Button>
-                              }
-                            />
-                          ) : null}
-                        </div>
-
-                        {selectionCard.expanded ? (
-                          <div className="em-expandable__footer">
-                            <span className="em-body-sm">
-                              {`${String(totalSelectedCount)} definitions selected`}
-                            </span>
-                            <Button
-                              variant="primary"
-                              onClick={() => selectionCard.setExpanded(false)}
-                            >
-                              Done
-                            </Button>
-                          </div>
-                        ) : null}
-                      </div>
+                      <DefinitionSelectionList
+                        preview={preview}
+                        selection={{
+                          metaobjectTypes: selectedMetaobjectTypes,
+                          metafieldKeys: selectedMetafieldKeys,
+                        }}
+                        onChange={(next) => {
+                          setSelectedMetaobjectTypes(next.metaobjectTypes);
+                          setSelectedMetafieldKeys(next.metafieldKeys);
+                        }}
+                        disabled={isSyncing}
+                        title="Select what to copy"
+                        copyContent={copyContent}
+                        onCopyContentChange={setCopyContent}
+                        expandable
+                      />
                     ) : (
                       <Banner tone="success" title="Everything is already in sync">
                         All metafield and metaobject definitions from the source
-                        store already exist in this store.
+                        store already exist in this store and match it.
                       </Banner>
                     )}
                   </>
@@ -1768,7 +1128,7 @@ export default function DefinitionSyncDashboard() {
             <div className="em-row-inline">
               <LinkButton
                 tone="muted"
-                onClick={toggleSelectAll}
+                onClick={clearSelection}
                 disabled={isSyncing || totalSelectedCount === 0}
               >
                 Clear selection
