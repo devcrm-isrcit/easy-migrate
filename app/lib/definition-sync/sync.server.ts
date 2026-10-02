@@ -30,6 +30,12 @@ import {
   fetchMetaobjectDefinitions,
   reconcileMetaobjectDefinition,
 } from "./metaobject-definitions.server";
+import {
+  silentSyncProgress,
+  type SyncProgressItem,
+  type SyncProgressPhase,
+  type SyncProgressReporter,
+} from "./progress.server";
 import { hasApplicableUpdates } from "./types.server";
 import type {
   DefinitionScanPreview,
@@ -228,10 +234,12 @@ async function syncMetaobjectsWithDependencies({
   admin,
   jobId,
   preview,
+  progress,
 }: {
   admin: NonNullable<AdminGraphqlClient>;
   jobId: string;
   preview: DefinitionScanPreview;
+  progress: SyncProgressReporter;
 }) {
   let createdMetaobjectDefinitions = 0;
   let addedMetaobjectFields = 0;
@@ -256,6 +264,27 @@ async function syncMetaobjectsWithDependencies({
       targetMetaobjectIdByType.set(item.type, item.target.id);
     }
   }
+
+  const metaobjectNameByType = new Map(
+    sourceMetaobjectDefinitions.map((definition) => [definition.type, definition.name]),
+  );
+  const metaobjectItem = (type: string): SyncProgressItem => ({
+    kind: "metaobject",
+    key: type,
+    name: metaobjectNameByType.get(type) ?? type,
+  });
+  const fieldItem = (
+    type: string,
+    field: MetaobjectFieldDefinitionRecord,
+  ): SyncProgressItem => ({
+    kind: "metaobject_field",
+    key: `${type}.${field.key}`,
+    name: `${metaobjectNameByType.get(type) ?? type} › ${field.name}`,
+  });
+  // Existing metaobjects only count as done after their last step (field adds
+  // and updates both run late), so remember how those went.
+  const typesWithAddedFields = new Set<string>();
+  const typesWithFailedFields = new Set<string>();
 
   const pendingFieldAdds = new Map<
     string,
@@ -323,6 +352,8 @@ async function syncMetaobjectsWithDependencies({
         continue;
       }
 
+      progress.working({ ...metaobjectItem(type), action: "create" });
+
       try {
         const createdDefinition = await createMetaobjectDefinition(
           admin,
@@ -349,6 +380,7 @@ async function syncMetaobjectsWithDependencies({
               ? "Created missing metaobject definition."
               : "Created missing metaobject definition and deferred dependent reference fields.",
         });
+        progress.record(metaobjectItem(type), "created", { tick: true });
 
         if (blocked.length) {
           pendingFieldAdds.set(type, {
@@ -368,6 +400,7 @@ async function syncMetaobjectsWithDependencies({
           status: "failed",
           message: error instanceof Error ? error.message : "Creation failed.",
         });
+        progress.record(metaobjectItem(type), "failed", { tick: true });
       }
     }
 
@@ -376,6 +409,8 @@ async function syncMetaobjectsWithDependencies({
     }
 
     for (const [type, definition] of [...pendingDefinitions.entries()]) {
+      progress.working({ ...metaobjectItem(type), action: "create" });
+
       try {
         const createdDefinition = await createMetaobjectDefinition(
           admin,
@@ -399,6 +434,7 @@ async function syncMetaobjectsWithDependencies({
           message:
             "Created missing metaobject definition shell so dependent reference fields can be added later.",
         });
+        progress.record(metaobjectItem(type), "created", { tick: true });
 
         pendingFieldAdds.set(type, {
           definitionId: createdDefinition.id,
@@ -416,6 +452,7 @@ async function syncMetaobjectsWithDependencies({
           status: "failed",
           message: error instanceof Error ? error.message : "Creation failed.",
         });
+        progress.record(metaobjectItem(type), "failed", { tick: true });
       }
     }
 
@@ -437,6 +474,8 @@ async function syncMetaobjectsWithDependencies({
       if (!ready.length) {
         continue;
       }
+
+      progress.working({ ...metaobjectItem(type), action: "add_fields" });
 
       try {
         const displayNameKey =
@@ -460,6 +499,7 @@ async function syncMetaobjectsWithDependencies({
 
         addedMetaobjectFields += ready.length;
         madeProgress = true;
+        typesWithAddedFields.add(type);
 
         for (const field of ready) {
           await createSyncLog({
@@ -469,6 +509,7 @@ async function syncMetaobjectsWithDependencies({
             status: "created",
             message: "Added missing metaobject field.",
           });
+          progress.record(fieldItem(type, field), "created");
         }
 
         if (blocked.length) {
@@ -486,6 +527,7 @@ async function syncMetaobjectsWithDependencies({
       } catch (error) {
         failedCount += ready.length;
         pendingFieldAdds.delete(type);
+        typesWithFailedFields.add(type);
 
         for (const field of ready) {
           await createSyncLog({
@@ -496,6 +538,7 @@ async function syncMetaobjectsWithDependencies({
             message:
               error instanceof Error ? error.message : "Failed to add field.",
           });
+          progress.record(fieldItem(type, field), "failed");
         }
       }
     }
@@ -514,6 +557,7 @@ async function syncMetaobjectsWithDependencies({
       );
 
       failedCount += pending.fields.length;
+      typesWithFailedFields.add(type);
 
       for (const field of pending.fields) {
         await createSyncLog({
@@ -527,6 +571,7 @@ async function syncMetaobjectsWithDependencies({
               ].join(", ")}.`
             : "Failed to add field.",
         });
+        progress.record(fieldItem(type, field), "failed");
       }
     }
 
@@ -539,12 +584,23 @@ async function syncMetaobjectsWithDependencies({
     const definitionId = item.target?.id;
 
     if (!definitionId || (!item.changedFields.length && !item.definitionChanges.length)) {
+      progress.record(
+        metaobjectItem(item.type),
+        typesWithFailedFields.has(item.type)
+          ? "failed"
+          : typesWithAddedFields.has(item.type)
+            ? "updated"
+            : "exists",
+        { tick: true },
+      );
       continue;
     }
 
     const changedProperties = new Set(
       item.definitionChanges.map((change) => change.property),
     );
+
+    progress.working({ ...metaobjectItem(item.type), action: "update" });
 
     try {
       await reconcileMetaobjectDefinition(admin, definitionId, {
@@ -591,6 +647,12 @@ async function syncMetaobjectsWithDependencies({
           message: `Updated ${[...changedProperties].join(", ")} to match the source.`,
         });
       }
+
+      progress.record(
+        metaobjectItem(item.type),
+        typesWithFailedFields.has(item.type) ? "failed" : "updated",
+        { tick: true },
+      );
     } catch (error) {
       failedCount += 1;
       await createSyncLog({
@@ -602,6 +664,7 @@ async function syncMetaobjectsWithDependencies({
           error instanceof Error ? error.message : "update failed."
         }`,
       });
+      progress.record(metaobjectItem(item.type), "failed", { tick: true });
     }
   }
 
@@ -818,6 +881,7 @@ export async function runDefinitionSync({
   selectedMetaobjectTypes,
   selectedMetafieldKeys,
   copyContent = false,
+  progress = silentSyncProgress,
 }: {
   sourceShop: string;
   sourceToken: string;
@@ -826,6 +890,7 @@ export async function runDefinitionSync({
   selectedMetaobjectTypes?: string[];
   selectedMetafieldKeys?: string[];
   copyContent?: boolean;
+  progress?: SyncProgressReporter;
 }) {
   const preview = await buildDefinitionScanPreview({
     sourceShop,
@@ -843,6 +908,7 @@ export async function runDefinitionSync({
     selectedMetaobjectTypes,
     selectedMetafieldKeys,
     copyContent,
+    progress,
   });
 }
 
@@ -863,6 +929,7 @@ export async function runDefinitionSyncFromPreview({
   copyContent = false,
   sourceKind = "store",
   sourceFileName,
+  progress = silentSyncProgress,
 }: {
   preview: DefinitionScanPreview;
   sourceShop: string;
@@ -874,6 +941,8 @@ export async function runDefinitionSyncFromPreview({
   copyContent?: boolean;
   sourceKind?: DefinitionSourceKind;
   sourceFileName?: string | null;
+  /** Live progress for the page; see progress.server.ts. */
+  progress?: SyncProgressReporter;
 }) {
   if (copyContent && !sourceToken) {
     throw new Error(
@@ -964,6 +1033,45 @@ export async function runDefinitionSyncFromPreview({
     },
   };
 
+  // One unit per selected definition. Each ticks once, when its main step
+  // ends, so the bar never runs past the end or goes backwards.
+  const metafieldKey = (definition: {
+    ownerType: string;
+    namespace: string;
+    key: string;
+  }) => `${definition.ownerType}:${definition.namespace}:${definition.key}`;
+  const metaobjectUnitTypes = new Set([
+    ...filteredPreview.metaobjects.missing.map((definition) => definition.type),
+    ...filteredPreview.metaobjects.existing.map((item) => item.type),
+  ]);
+  const metafieldUnitKeys = new Set([
+    ...filteredPreview.metafields.missing.map(metafieldKey),
+    ...filteredPreview.metafields.existing.map(metafieldKey),
+    ...filteredPreview.metafields.conflicts.map((conflict) => conflict.key),
+  ]);
+  const contentTypeCount = copyContent ? metaobjectUnitTypes.size : 0;
+  const phases: SyncProgressPhase[] = ["preparing"];
+  if (metaobjectUnitTypes.size) phases.push("metaobjects");
+  if (metafieldUnitKeys.size) phases.push("metafields");
+  if (contentTypeCount) phases.push("content");
+
+  progress.plan({
+    total: metaobjectUnitTypes.size + metafieldUnitKeys.size,
+    contentTotal: contentTypeCount,
+    phases,
+  });
+
+  const metafieldItem = (definition: {
+    ownerType: string;
+    namespace: string;
+    key: string;
+    name: string;
+  }): SyncProgressItem => ({
+    kind: "metafield",
+    key: metafieldKey(definition),
+    name: definition.name,
+  });
+
   const job = await createSyncJob({
     sourceShop,
     targetShop,
@@ -1007,6 +1115,10 @@ export async function runDefinitionSyncFromPreview({
       });
     }
 
+    if (metaobjectUnitTypes.size) {
+      progress.phase("metaobjects");
+    }
+
     const {
       createdMetaobjectDefinitions: createdMetaobjectCount,
       addedMetaobjectFields: addedMetaobjectFieldCount,
@@ -1018,6 +1130,7 @@ export async function runDefinitionSyncFromPreview({
       admin,
       jobId: job.id,
       preview: filteredPreview,
+      progress,
     });
 
     createdMetaobjectDefinitions += createdMetaobjectCount;
@@ -1025,6 +1138,10 @@ export async function runDefinitionSyncFromPreview({
     updatedMetaobjectDefinitions += updatedMetaobjectCount;
     updatedMetaobjectFields += updatedMetaobjectFieldCount;
     failedCount += metaobjectFailedCount;
+
+    if (metafieldUnitKeys.size) {
+      progress.phase("metafields");
+    }
 
     const refreshedTargetMetaobjects = await fetchMetaobjectDefinitions({ admin });
     let targetMetaobjectIdByType = buildTargetMetaobjectIdByType(
@@ -1051,8 +1168,11 @@ export async function runDefinitionSyncFromPreview({
           status: "exists",
           message: "Definition already exists with the same type.",
         });
+        progress.record(metafieldItem(definition), "exists", { tick: true });
         continue;
       }
+
+      progress.working({ ...metafieldItem(definition), action: "update" });
 
       try {
         await updateMetafieldDefinition(admin, definition);
@@ -1066,6 +1186,7 @@ export async function runDefinitionSyncFromPreview({
             .map((change) => change.property)
             .join(", ")} to match the source.`,
         });
+        progress.record(metafieldItem(definition), "updated", { tick: true });
       } catch (error) {
         failedCount += 1;
         await createSyncLog({
@@ -1077,6 +1198,7 @@ export async function runDefinitionSyncFromPreview({
             error instanceof Error ? error.message : "update failed."
           }`,
         });
+        progress.record(metafieldItem(definition), "failed", { tick: true });
       }
     }
 
@@ -1088,6 +1210,7 @@ export async function runDefinitionSyncFromPreview({
         status: "conflict",
         message: conflict.message,
       });
+      progress.record(metafieldItem(conflict.source), "conflict", { tick: true });
     }
 
     const sourceMetaobjectTypeById = buildSourceMetaobjectTypeById(filteredPreview);
@@ -1095,6 +1218,8 @@ export async function runDefinitionSyncFromPreview({
 
     for (const definition of filteredPreview.metafields.missing) {
       const itemKey = `${definition.ownerType}:${definition.namespace}:${definition.key}`;
+
+      progress.working({ ...metafieldItem(definition), action: "create" });
 
       try {
         const preparedDefinition = {
@@ -1115,6 +1240,7 @@ export async function runDefinitionSyncFromPreview({
           status: "created",
           message: "Created missing metafield definition.",
         });
+        progress.record(metafieldItem(definition), "created", { tick: true });
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Creation failed.";
@@ -1139,6 +1265,7 @@ export async function runDefinitionSyncFromPreview({
           status: "failed",
           message,
         });
+        progress.record(metafieldItem(definition), "failed", { tick: true });
       }
     }
 
@@ -1151,6 +1278,8 @@ export async function runDefinitionSyncFromPreview({
 
       for (const definition of deferredMetafields) {
         const itemKey = `${definition.ownerType}:${definition.namespace}:${definition.key}`;
+
+        progress.working({ ...metafieldItem(definition), action: "retry" });
 
         try {
           const preparedDefinition = {
@@ -1171,6 +1300,7 @@ export async function runDefinitionSyncFromPreview({
             status: "created",
             message: "Created missing metafield definition after retry.",
           });
+          progress.record(metafieldItem(definition), "created", { tick: true });
         } catch (error) {
           failedCount += 1;
           await createSyncLog({
@@ -1181,6 +1311,7 @@ export async function runDefinitionSyncFromPreview({
             message:
               error instanceof Error ? error.message : "Creation failed.",
           });
+          progress.record(metafieldItem(definition), "failed", { tick: true });
         }
       }
     }
@@ -1197,6 +1328,8 @@ export async function runDefinitionSyncFromPreview({
           refreshedTargetMetaobjects.definitions,
         );
 
+        progress.phase("content");
+
         const contentResult = await syncMetaobjectContent({
           sourceShop,
           // Guarded at the top of this function: copyContent requires a token.
@@ -1205,6 +1338,13 @@ export async function runDefinitionSyncFromPreview({
           jobId: job.id,
           metaobjectTypes: allMetaobjectTypes,
           targetTypeBySourceType,
+          progress,
+          metaobjectNameByType: new Map(
+            [
+              ...filteredPreview.metaobjects.missing,
+              ...filteredPreview.metaobjects.existing.map((item) => item.source),
+            ].map((definition) => [definition.type, definition.name]),
+          ),
         });
 
         copiedMetaobjectEntries = contentResult.copiedEntries;

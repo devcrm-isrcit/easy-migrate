@@ -26,6 +26,11 @@ import {
 } from "../components/easy-migrate-ui";
 import { ConflictDetailsButton } from "../components/conflict-details";
 import {
+  SyncProgressPanel,
+  useSyncProgress,
+  type SyncOutcome,
+} from "../components/sync-progress";
+import {
   DefinitionSelectionList,
   countSelection,
   getSelectableDefinitions,
@@ -39,6 +44,10 @@ import {
 import { parseDefinitionCsv } from "../lib/definition-csv/import.server";
 import type { DefinitionCsvIssue } from "../lib/definition-csv/import.server";
 import { getReferencedMetaobjectTypes } from "../lib/definition-sync/metaobject-references.server";
+import {
+  silentSyncProgress,
+  startSyncProgress,
+} from "../lib/definition-sync/progress.server";
 import { fetchMetafieldDefinitions } from "../lib/definition-sync/metafield-definitions.server";
 import { fetchMetaobjectDefinitions } from "../lib/definition-sync/metaobject-definitions.server";
 import {
@@ -200,6 +209,10 @@ export async function action({ request }: ActionFunctionArgs) {
     }
 
     const sourceShop = parsed.meta.sourceShop || fileName || "csv-import";
+    const progress =
+      intent === "sync_csv"
+        ? startSyncProgress({ shop: session.shop, runId: formData.get("runId") })
+        : silentSyncProgress;
 
     try {
       const preview = await buildDefinitionScanPreviewFromDefinitions({
@@ -230,6 +243,7 @@ export async function action({ request }: ActionFunctionArgs) {
       ) as string[];
 
       if (!selectedMetafieldKeys.length && !selectedMetaobjectTypes.length) {
+        progress.fail("Select at least one definition to import.");
         return {
           ok: false as const,
           intent,
@@ -247,7 +261,9 @@ export async function action({ request }: ActionFunctionArgs) {
         copyContent: false,
         sourceKind: "csv",
         sourceFileName: fileName,
+        progress,
       });
+      progress.finish();
 
       return {
         ok: true as const,
@@ -266,15 +282,17 @@ export async function action({ request }: ActionFunctionArgs) {
         recordingError: result.recordingError,
       };
     } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : intent === "scan_csv"
+            ? "Failed to scan this store."
+            : "Import failed.";
+      progress.fail(message);
       return {
         ok: false as const,
         intent,
-        error:
-          error instanceof Error
-            ? error.message
-            : intent === "scan_csv"
-              ? "Failed to scan this store."
-              : "Import failed.",
+        error: message,
       };
     }
   }
@@ -508,7 +526,6 @@ function ExportTab() {
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"all" | "metaobjects" | "metafields">("all");
   const [ownerFilter, setOwnerFilter] = useState("all");
-  const [hasPreselected, setHasPreselected] = useState(false);
   const lastDownloadRef = useRef<string | null>(null);
   const hasRequestedLoadRef = useRef(false);
   const {
@@ -543,16 +560,47 @@ function ExportTab() {
   const loadWarnings = loadData?.ok ? loadData.warnings : [];
   const loadError = loadData && !loadData.ok ? loadData.error : null;
 
-  // Everything is ticked by default, once, the first time the list arrives.
+  // Every definition arrives ticked. A re-scan keeps the ticks as they were,
+  // ticks only definitions that are new since the last scan, and drops ones
+  // the store no longer has.
+  const seenDefinitionsRef = useRef<{
+    metafieldKeys: Set<string>;
+    metaobjectTypes: Set<string>;
+  } | null>(null);
   useEffect(() => {
-    if (hasPreselected || (!metafields.length && !metaobjects.length)) {
+    if (!loadData?.ok) {
       return;
     }
 
-    setSelectedMetafieldKeys(metafields.map((item) => item.identifier));
-    setSelectedMetaobjectTypes(metaobjects.map((item) => item.type));
-    setHasPreselected(true);
-  }, [hasPreselected, metafields, metaobjects]);
+    const seen = seenDefinitionsRef.current;
+    const metafieldKeys = metafields.map((item) => item.identifier);
+    const metaobjectTypes = metaobjects.map((item) => item.type);
+
+    const merge = (current: string[], present: string[], seenBefore?: Set<string>) => {
+      const presentSet = new Set(present);
+      return [
+        ...new Set([
+          ...current.filter((value) => presentSet.has(value)),
+          ...present.filter((value) => !seenBefore?.has(value)),
+        ]),
+      ];
+    };
+
+    setSelectedMetafieldKeys((current) =>
+      merge(current, metafieldKeys, seen?.metafieldKeys),
+    );
+    setSelectedMetaobjectTypes((current) =>
+      merge(current, metaobjectTypes, seen?.metaobjectTypes),
+    );
+    seenDefinitionsRef.current = {
+      metafieldKeys: new Set(metafieldKeys),
+      metaobjectTypes: new Set(metaobjectTypes),
+    };
+  }, [loadData, metafields, metaobjects]);
+
+  function handleRescan() {
+    submitLoad({ intent: "load_definitions" }, { method: "post" });
+  }
 
   const exportData = exportFetcher.data;
   const exportError = exportData && !exportData.ok ? exportData.error : null;
@@ -711,7 +759,15 @@ function ExportTab() {
 
   if (loadError) {
     return (
-      <Banner tone="critical" title="Couldn't read definitions">
+      <Banner
+        tone="critical"
+        title="Couldn't read definitions"
+        action={
+          <Button size="sm" icon="refresh" onClick={handleRescan} loading={isLoading}>
+            Try again
+          </Button>
+        }
+      >
         {loadError}
       </Banner>
     );
@@ -724,6 +780,11 @@ function ExportTab() {
           icon="inventory_2"
           title="Nothing to export yet"
           body="This store has no metafield or metaobject definitions that this app can read."
+          action={
+            <Button icon="refresh" onClick={handleRescan} loading={isLoading}>
+              Re-scan
+            </Button>
+          }
         />
       </div>
     );
@@ -772,9 +833,20 @@ function ExportTab() {
         <div className="em-list-toolbar">
           <div className="em-row-between">
             <h3 className="em-section-heading">Select what to export</h3>
-            <span className="em-label-caps">
-              {`${String(exportCount)} of ${String(visibleCount)} selected`}
-            </span>
+            <div className="em-row-inline">
+              <span className="em-label-caps">
+                {`${String(exportCount)} of ${String(visibleCount)} selected`}
+              </span>
+              <Button
+                size="sm"
+                icon="refresh"
+                onClick={handleRescan}
+                loading={isLoading}
+                disabled={isExporting}
+              >
+                Re-scan
+              </Button>
+            </div>
           </div>
           <div className="em-list-toolbar__row">
             <div className="em-search">
@@ -1048,6 +1120,7 @@ function ImportTab() {
   const isScanning = scanFetcher.state !== "idle";
   const isSyncing = syncFetcher.state !== "idle";
   const isBusy = isScanning || isSyncing;
+  const syncProgress = useSyncProgress(isSyncing);
 
   const scanData = scanFetcher.data;
   const scanError = scanData && !scanData.ok ? scanData.error : null;
@@ -1074,11 +1147,19 @@ function ImportTab() {
     setSelection({ metaobjectTypes: [], metafieldKeys: [] });
   }, [preview]);
 
+  // Waits for the progress panel to finish, so a clean run does not clear the
+  // scan (and the panel with it) the moment it lands.
+  const handledSyncRef = useRef<unknown>(null);
   useEffect(() => {
-    if (!completedSync) {
+    if (
+      !completedSync ||
+      syncProgress.visible ||
+      handledSyncRef.current === completedSync
+    ) {
       return;
     }
 
+    handledSyncRef.current = completedSync;
     setShowSyncResult(true);
 
     // Only a clean run consumes the file. If items failed, the file and the
@@ -1089,7 +1170,7 @@ function ImportTab() {
       setCsvMeta(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [completedSync]);
+  }, [completedSync, syncProgress.visible]);
 
   function clearChosenFile() {
     if (fileInputRef.current) {
@@ -1209,10 +1290,20 @@ function ImportTab() {
         fileName,
         selectedMetaobjectTypes: JSON.stringify(selection.metaobjectTypes),
         selectedMetafieldKeys: JSON.stringify(selection.metafieldKeys),
+        runId: syncProgress.begin(),
       },
       { method: "post" },
     );
   }
+
+  const importFailureCount = completedSync?.failedCount ?? 0;
+  const importOutcome: SyncOutcome = isSyncing
+    ? "running"
+    : syncError
+      ? "failed"
+      : importFailureCount > 0
+        ? "warning"
+        : "success";
 
   const selectable = getSelectableDefinitions(preview, false);
   const allSelectableCount = countSelection(selectable);
@@ -1366,7 +1457,7 @@ function ImportTab() {
         </Banner>
       ))}
 
-      {syncError ? (
+      {!syncProgress.visible && syncError ? (
         <Banner tone="critical" title="Import failed">
           {syncError}
         </Banner>
@@ -1500,15 +1591,17 @@ function ImportTab() {
             </Banner>
           ) : null}
 
-          {isSyncing ? (
-            <Banner tone="info" title="Import running">
-              Keep this page open. Closing it stops the import after the current
-              item.
-            </Banner>
+          {syncProgress.visible ? (
+            <SyncProgressPanel
+              noun="import"
+              progress={syncProgress.progress}
+              outcome={importOutcome}
+              failedCount={importFailureCount}
+              error={syncError}
+            />
           ) : null}
 
-
-          {allSelectableCount > 0 ? (
+          {syncProgress.visible ? null : allSelectableCount > 0 ? (
             <DefinitionSelectionList
               preview={preview}
               selection={selection}
@@ -1522,7 +1615,7 @@ function ImportTab() {
             </Banner>
           )}
 
-          {allSelectableCount > 0 ? (
+          {allSelectableCount > 0 && !syncProgress.visible ? (
             <div className="em-actionbar">
               <div className="em-row-inline">
                 <span className="em-actionbar__label">

@@ -2,6 +2,11 @@ import { sourceAdminGraphql } from "./source-admin.server";
 import { assertNoUserErrors, targetAdminGraphql } from "./target-admin.server";
 import { createSyncLog } from "./logger.server";
 import {
+  silentSyncProgress,
+  type SyncProgressItem,
+  type SyncProgressReporter,
+} from "./progress.server";
+import {
   getMetaobjectTypeLogicalKey,
   isAppReservedMetaobjectType,
 } from "./metaobject-type.server";
@@ -460,6 +465,8 @@ export async function syncMetaobjectContent({
   jobId,
   metaobjectTypes,
   targetTypeBySourceType,
+  progress = silentSyncProgress,
+  metaobjectNameByType = new Map(),
 }: {
   sourceShop: string;
   sourceToken: string;
@@ -467,6 +474,9 @@ export async function syncMetaobjectContent({
   jobId: string;
   metaobjectTypes: string[];
   targetTypeBySourceType: Map<string, string>;
+  progress?: SyncProgressReporter;
+  /** Display names for the progress panel. */
+  metaobjectNameByType?: Map<string, string>;
 }): Promise<{ copiedEntries: number; skippedEntries: number; failedEntries: number }> {
   let copiedEntries = 0;
   let skippedEntries = 0;
@@ -475,6 +485,19 @@ export async function syncMetaobjectContent({
   const fileCache = new Map<string, string | null>();
 
   for (const type of metaobjectTypes) {
+    const typeItem: SyncProgressItem = {
+      kind: "metaobject",
+      key: type,
+      name: metaobjectNameByType.get(type) ?? type,
+    };
+    const entryItem = (handle: string): SyncProgressItem => ({
+      kind: "entry",
+      key: `${type}/${handle}`,
+      name: `${typeItem.name} › ${handle}`,
+    });
+
+    progress.working({ ...typeItem, action: "copy_entries" });
+
     try {
       const targetType =
         targetTypeBySourceType.get(type) ??
@@ -489,6 +512,7 @@ export async function syncMetaobjectContent({
           status: "failed",
           message: "No matching target metaobject definition was found for this source type.",
         });
+        progress.record(typeItem, "failed");
         continue;
       }
 
@@ -508,8 +532,18 @@ export async function syncMetaobjectContent({
           status: "skipped",
           message: "No entries found in source store.",
         });
+        progress.record(typeItem, "skipped");
         continue;
       }
+
+      let entriesHandled = 0;
+      const reportEntryStep = () =>
+        progress.working({
+          ...typeItem,
+          action: "copy_entries",
+          step: { done: entriesHandled, total: sourceEntries.length },
+        });
+      reportEntryStep();
 
       for (const entry of sourceEntries) {
         if (existingHandles.has(entry.handle)) {
@@ -521,6 +555,9 @@ export async function syncMetaobjectContent({
             status: "exists",
             message: "Entry already exists in target store.",
           });
+          progress.record(entryItem(entry.handle), "exists");
+          entriesHandled += 1;
+          reportEntryStep();
           continue;
         }
 
@@ -550,6 +587,7 @@ export async function syncMetaobjectContent({
             status: "created",
             message: msg,
           });
+          progress.record(entryItem(entry.handle), "created");
         } catch (error) {
           failedEntries += 1;
           await createSyncLog({
@@ -559,7 +597,11 @@ export async function syncMetaobjectContent({
             status: "failed",
             message: error instanceof Error ? error.message : "Failed to create entry.",
           });
+          progress.record(entryItem(entry.handle), "failed");
         }
+
+        entriesHandled += 1;
+        reportEntryStep();
       }
     } catch (error) {
       failedEntries += 1;
@@ -570,6 +612,9 @@ export async function syncMetaobjectContent({
         status: "failed",
         message: error instanceof Error ? error.message : "Failed to fetch entries.",
       });
+      progress.record(typeItem, "failed");
+    } finally {
+      progress.contentTypeDone();
     }
   }
 

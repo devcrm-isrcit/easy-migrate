@@ -152,6 +152,18 @@ export async function fetchMetafieldDefinitions(options: {
   return { definitions, ownerTypeAccess };
 }
 
+// App-reserved namespaces, as written (`$app`, `$app:sub`) or as Shopify
+// returns them once resolved (`app--<app id>`, `app--<app id>--sub`).
+const APP_RESERVED_NAMESPACE_PATTERN = /^app--\d+(--.+)?$/;
+
+function isAppReservedMetafieldNamespace(namespace: string) {
+  return (
+    namespace === "$app" ||
+    namespace.startsWith("$app:") ||
+    APP_RESERVED_NAMESPACE_PATTERN.test(namespace)
+  );
+}
+
 export async function createMetafieldDefinition(
   admin: AdminGraphqlClient,
   definition: MetafieldDefinitionRecord,
@@ -183,10 +195,13 @@ export async function createMetafieldDefinition(
     {
       definition: {
         name: definition.name,
-        access: {
-          admin: "MERCHANT_READ_WRITE",
-          storefront: "PUBLIC_READ",
-        },
+        // `admin` is only accepted on app-reserved namespaces. A merchant-owned
+        // namespace such as `custom` is always open to the merchant and other
+        // apps, and Shopify rejects any value there ("Setting this access
+        // control is not permitted. It must be one of ["public_read_write"]").
+        access: isAppReservedMetafieldNamespace(definition.namespace)
+          ? { admin: "MERCHANT_READ_WRITE", storefront: "PUBLIC_READ" }
+          : { storefront: "PUBLIC_READ" },
         namespace: definition.namespace,
         key: definition.key,
         ownerType: definition.ownerType,

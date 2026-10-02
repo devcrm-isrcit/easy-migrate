@@ -25,6 +25,11 @@ import {
 } from "../components/easy-migrate-ui";
 import { ConflictDetailsButton } from "../components/conflict-details";
 import {
+  SyncProgressPanel,
+  useSyncProgress,
+  type SyncOutcome,
+} from "../components/sync-progress";
+import {
   getLatestSyncJob,
 } from "../lib/definition-sync/logger.server";
 import { createStoreConnectionHistory } from "../lib/history.server";
@@ -39,6 +44,7 @@ import {
   validateShopDomain,
 } from "../lib/definition-sync/shop-domain.server";
 import { findMissingReferencedMetaobjectTypes } from "../lib/definition-sync/metaobject-references.shared";
+import { startSyncProgress } from "../lib/definition-sync/progress.server";
 import type { DefinitionScanPreview as ServerDefinitionScanPreview } from "../lib/definition-sync/types.shared";
 import {
   clearStoredSourceCredential,
@@ -149,6 +155,11 @@ export async function action({ request }: ActionFunctionArgs) {
       };
     }
 
+    const progress = startSyncProgress({
+      shop: session.shop,
+      runId: formData.get("runId"),
+    });
+
     try {
       const result = await runDefinitionSync({
         sourceShop: normalizedShop,
@@ -158,7 +169,9 @@ export async function action({ request }: ActionFunctionArgs) {
         selectedMetaobjectTypes,
         selectedMetafieldKeys,
         copyContent,
+        progress,
       });
+      progress.finish();
       return {
         ok: true,
         intent,
@@ -168,10 +181,12 @@ export async function action({ request }: ActionFunctionArgs) {
         failures: result.failures,
       };
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Sync failed.";
+      progress.fail(message);
       return {
         ok: false,
         intent,
-        error: error instanceof Error ? error.message : "Sync failed.",
+        error: message,
       };
     }
   }
@@ -346,6 +361,7 @@ export default function DefinitionSyncDashboard() {
   const isSaving = connectionFetcher.state !== "idle";
   const isScanning = scanFetcher.state !== "idle";
   const isSyncing = syncFetcher.state !== "idle";
+  const syncProgress = useSyncProgress(isSyncing);
 
   const scanData = scanFetcher.data as
     | {
@@ -438,14 +454,26 @@ export default function DefinitionSyncDashboard() {
 
     setSelectedMetaobjectTypes([]);
     setSelectedMetafieldKeys([]);
-
-    window.setTimeout(() => {
-      latestSyncResultRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
-    }, 150);
   }, [syncData]);
+
+  // Scroll to the result once the progress panel has made way for it.
+  const scrolledForSyncRef = useRef<unknown>(null);
+  useEffect(() => {
+    if (
+      syncProgress.visible ||
+      syncData?.intent !== "sync" ||
+      !syncData.ok ||
+      scrolledForSyncRef.current === syncData
+    ) {
+      return;
+    }
+
+    scrolledForSyncRef.current = syncData;
+    latestSyncResultRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }, [syncData, syncProgress.visible]);
 
   const missingMetaobjects = preview?.metaobjects.missing ?? [];
   const existingMetaobjects = preview?.metaobjects.existing ?? [];
@@ -648,6 +676,7 @@ export default function DefinitionSyncDashboard() {
     fd.set("selectedMetaobjectTypes", JSON.stringify(selectedMetaobjectTypes));
     fd.set("selectedMetafieldKeys", JSON.stringify(selectedMetafieldKeys));
     fd.set("copyContent", copyContent ? "true" : "false");
+    fd.set("runId", syncProgress.begin());
     syncFetcher.submit(fd, { method: "post" });
   }
 
@@ -774,6 +803,13 @@ export default function DefinitionSyncDashboard() {
   // Items fail individually without throwing, so a resolved sync is not
   // necessarily a clean one.
   const syncFailureCount = syncSucceeded ? (syncData?.failedCount ?? 0) : 0;
+  const syncOutcome: SyncOutcome = isSyncing
+    ? "running"
+    : syncFailed
+      ? "failed"
+      : syncFailureCount > 0
+        ? "warning"
+        : "success";
 
   return (
     <div className="em-app">
@@ -832,55 +868,58 @@ export default function DefinitionSyncDashboard() {
               )
             ) : (
               <>
-                {/* ── Scan control ── */}
-                <div className="em-card">
-                  <div className="em-card__body">
-                    <div className="em-row-between">
-                      <div>
-                        <h3 className="em-section-heading">Definition scan</h3>
-                        <p className="em-body-sm" style={{ marginTop: 4 }}>
-                          Compare the source store against this store to find
-                          missing definitions.
-                        </p>
+                {/* ── Scan control: only until there are results; after that the
+                    Scan Summary card holds the Re-scan button. ── */}
+                {!preview ? (
+                  <div className="em-card">
+                    <div className="em-card__body">
+                      <div className="em-row-between">
+                        <div>
+                          <h3 className="em-section-heading">Definition scan</h3>
+                          <p className="em-body-sm" style={{ marginTop: 4 }}>
+                            Compare the source store against this store to find
+                            missing definitions.
+                          </p>
+                        </div>
+                        <Button
+                          variant="primary"
+                          icon="search"
+                          onClick={handleScan}
+                          loading={isScanning}
+                          disabled={isSyncing}
+                        >
+                          Scan definitions
+                        </Button>
                       </div>
-                      <Button
-                        variant="primary"
-                        icon="search"
-                        onClick={handleScan}
-                        loading={isScanning}
-                        disabled={isSyncing}
-                      >
-                        {preview ? "Re-scan" : "Scan definitions"}
-                      </Button>
-                    </div>
 
-                    {isScanning ? (
-                      <>
+                      {isScanning ? (
+                        <>
+                          <p className="em-body-sm">
+                            Reading definitions from the source store…
+                          </p>
+                          <div className="em-progress">
+                            <div className="em-progress__fill em-progress__fill--indeterminate" />
+                          </div>
+                          <div className="em-stat-grid">
+                            <div className="em-skeleton em-skeleton--tile" />
+                            <div className="em-skeleton em-skeleton--tile" />
+                            <div className="em-skeleton em-skeleton--tile" />
+                            <div className="em-skeleton em-skeleton--tile" />
+                          </div>
+                        </>
+                      ) : scanError ? (
+                        <Banner tone="critical" title="Scan failed">
+                          {scanError}
+                        </Banner>
+                      ) : (
                         <p className="em-body-sm">
-                          Reading definitions from the source store…
+                          Scanning reads data only — nothing is copied until you
+                          choose.
                         </p>
-                        <div className="em-progress">
-                          <div className="em-progress__fill em-progress__fill--indeterminate" />
-                        </div>
-                        <div className="em-stat-grid">
-                          <div className="em-skeleton em-skeleton--tile" />
-                          <div className="em-skeleton em-skeleton--tile" />
-                          <div className="em-skeleton em-skeleton--tile" />
-                          <div className="em-skeleton em-skeleton--tile" />
-                        </div>
-                      </>
-                    ) : scanError ? (
-                      <Banner tone="critical" title="Scan failed">
-                        {scanError}
-                      </Banner>
-                    ) : !preview ? (
-                      <p className="em-body-sm">
-                        Scanning reads data only — nothing is copied until you
-                        choose.
-                      </p>
-                    ) : null}
+                      )}
+                    </div>
                   </div>
-                </div>
+                ) : null}
 
                 {preview ? (
                   <>
@@ -920,7 +959,7 @@ export default function DefinitionSyncDashboard() {
                               : `Source store ${preview.sourceShop}`}
                           </span>
                           <Button
-                            size="sm"
+                            variant="primary"
                             icon="refresh"
                             onClick={handleScan}
                             loading={isScanning}
@@ -950,13 +989,13 @@ export default function DefinitionSyncDashboard() {
                       </Banner>
                     ) : null}
 
-                    {syncFailed ? (
+                    {!syncProgress.visible && syncFailed ? (
                       <Banner tone="critical" title="Sync failed">
                         {syncData?.error}
                       </Banner>
                     ) : null}
 
-                    {syncSucceeded ? (
+                    {!syncProgress.visible && syncSucceeded ? (
                       <Banner
                         tone={syncFailureCount > 0 ? "warning" : "success"}
                         title={
@@ -995,14 +1034,18 @@ export default function DefinitionSyncDashboard() {
                       </Banner>
                     ) : null}
 
-                    {isSyncing ? (
-                      <Banner tone="info" title="Sync running">
-                        Keep this page open. Closing it stops the sync after the
-                        current item.
-                      </Banner>
+                    {syncProgress.visible ? (
+                      <SyncProgressPanel
+                        noun="sync"
+                        progress={syncProgress.progress}
+                        outcome={syncOutcome}
+                        failedCount={syncFailureCount}
+                        error={syncData?.error}
+                      />
                     ) : null}
 
-                    {missingReferencedMetaobjectTypes.length > 0 ? (
+                    {!syncProgress.visible &&
+                    missingReferencedMetaobjectTypes.length > 0 ? (
                       <Banner
                         tone="warning"
                         title="Missing referenced definitions"
@@ -1023,7 +1066,9 @@ export default function DefinitionSyncDashboard() {
                     ) : null}
 
                     {/* ── Selection list ── */}
-                    {allSelectableCount > 0 && selectionCard.expanded ? (
+                    {!syncProgress.visible &&
+                    allSelectableCount > 0 &&
+                    selectionCard.expanded ? (
                       <>
                         {/* Holds the card's place while it is out of the flow. */}
                         <div
@@ -1037,7 +1082,7 @@ export default function DefinitionSyncDashboard() {
                         />
                       </>
                     ) : null}
-                    {allSelectableCount > 0 ? (
+                    {syncProgress.visible ? null : allSelectableCount > 0 ? (
                       <div
                         ref={selectionCard.cardRef}
                         className={[
@@ -1707,7 +1752,10 @@ export default function DefinitionSyncDashboard() {
         </div>
 
         {/* ── Sticky action bar ── */}
-        {hasVerifiedConnection && preview && allSelectableCount > 0 ? (
+        {hasVerifiedConnection &&
+        preview &&
+        allSelectableCount > 0 &&
+        !syncProgress.visible ? (
           <div className="em-actionbar">
             <div className="em-row-inline">
               <span className="em-actionbar__label">
