@@ -243,9 +243,21 @@ export default function FileMigrationPage() {
   const selectableVisibleFiles = paginatedFiles.filter(
     (file) => !file.alreadyInTarget,
   );
+  // A Set, because a store can have thousands of files and every render
+  // checks each of them against the selection.
+  const selectedFileIdSet = new Set(selectedFileIds);
   const allVisibleSelected =
     selectableVisibleFiles.length > 0 &&
-    selectableVisibleFiles.every((file) => selectedFileIds.includes(file.id));
+    selectableVisibleFiles.every((file) => selectedFileIdSet.has(file.id));
+  // Every file the filters match across all pages, not just this one.
+  const selectableMatchingFiles = filteredFiles.filter(
+    (file) => !file.alreadyInTarget,
+  );
+  const allMatchingSelected =
+    selectableMatchingFiles.length > 0 &&
+    selectableMatchingFiles.every((file) => selectedFileIdSet.has(file.id));
+  const hasMorePages =
+    selectableMatchingFiles.length > selectableVisibleFiles.length;
   const imageCount = files.filter((file) => getFileFilterType(file) === "image").length;
   const videoCount = files.filter((file) => getFileFilterType(file) === "video").length;
   const otherCount = files.filter((file) => getFileFilterType(file) === "other").length;
@@ -356,6 +368,12 @@ export default function FileMigrationPage() {
       }
       return [...next];
     });
+  }
+
+  function selectAllMatching() {
+    setSelectedFileIds((current) => [
+      ...new Set([...current, ...selectableMatchingFiles.map((file) => file.id)]),
+    ]);
   }
 
   function clearFilters() {
@@ -509,6 +527,29 @@ export default function FileMigrationPage() {
                 <div className="em-cell-right">Type</div>
                 <div>Status</div>
               </div>
+
+              {/* Gmail-style: once a page is ticked, offer every match. */}
+              {allVisibleSelected && hasMorePages ? (
+                <div className="em-group-row">
+                  <span className="em-body-sm">
+                    {allMatchingSelected
+                      ? `All ${String(selectableMatchingFiles.length)} matching files are selected.`
+                      : `All ${String(selectableVisibleFiles.length)} files on this page are selected.`}
+                  </span>
+                  {allMatchingSelected ? (
+                    <LinkButton
+                      onClick={() => setSelectedFileIds([])}
+                      disabled={isMigrating}
+                    >
+                      Clear selection
+                    </LinkButton>
+                  ) : (
+                    <LinkButton onClick={selectAllMatching} disabled={isMigrating}>
+                      {`Select all ${String(selectableMatchingFiles.length)} matching files`}
+                    </LinkButton>
+                  )}
+                </div>
+              ) : null}
 
               <div className="em-list-scroll em-list-scroll--500">
                 {paginatedFiles.length > 0 ? (

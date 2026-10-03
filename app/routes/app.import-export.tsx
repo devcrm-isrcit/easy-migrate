@@ -664,6 +664,33 @@ function ExportTab() {
     setOwnerFilter("all");
   }
 
+  // The type and owner dropdowns untick the rows they hide, so what is ticked
+  // on screen is what gets exported. Search only hides rows.
+  function changeFilters(
+    nextView: "all" | "metaobjects" | "metafields",
+    nextOwnerFilter: string,
+  ) {
+    setView(nextView);
+    setOwnerFilter(nextOwnerFilter);
+
+    if (nextView === "metafields") {
+      setSelectedMetaobjectTypes([]);
+    }
+
+    const keysInView = new Set(
+      metafields
+        .filter(
+          (item) =>
+            nextView !== "metaobjects" &&
+            (nextOwnerFilter === "all" || item.ownerType === nextOwnerFilter),
+        )
+        .map((item) => item.identifier),
+    );
+    setSelectedMetafieldKeys((current) =>
+      current.filter((key) => keysInView.has(key)),
+    );
+  }
+
   // Only ticked rows that the filters leave on screen are exported. Every row
   // starts ticked, so "Metafields only" would otherwise still export all the
   // hidden metaobjects.
@@ -865,7 +892,10 @@ function ExportTab() {
               style={{ width: 170 }}
               value={view}
               onChange={(event) =>
-                setView(event.target.value as "all" | "metaobjects" | "metafields")
+                changeFilters(
+                  event.target.value as "all" | "metaobjects" | "metafields",
+                  ownerFilter,
+                )
               }
               disabled={isExporting}
               aria-label="Filter by definition type"
@@ -878,7 +908,7 @@ function ExportTab() {
               className="em-select"
               style={{ width: 190 }}
               value={ownerFilter}
-              onChange={(event) => setOwnerFilter(event.target.value)}
+              onChange={(event) => changeFilters(view, event.target.value)}
               disabled={isExporting || view === "metaobjects"}
               aria-label="Filter by metafield owner type"
             >

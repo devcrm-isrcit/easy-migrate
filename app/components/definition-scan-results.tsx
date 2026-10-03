@@ -251,10 +251,7 @@ export function DefinitionSelectionList({
 
   const normalizedSelectionQuery = selectionQuery.trim().toLowerCase();
   const selectable = getSelectableDefinitions(preview, isCopyingContent);
-  const allSelectableCount = countSelection(selectable);
   const totalSelectedCount = countSelection(selection);
-  const allSelected =
-    allSelectableCount > 0 && totalSelectedCount === allSelectableCount;
 
   const allMetaobjectTypes = selectable.metaobjectTypes;
   const allMetafieldIdentifiers = selectable.metafieldKeys;
@@ -297,6 +294,19 @@ export function DefinitionSelectionList({
   });
   const visibleItemCount = visibleMetaobjectRows.length + visibleMetafieldRows.length;
 
+  // The header checkbox works on the rows the filters leave on screen, like
+  // the export list; rows hidden by a filter keep whatever ticks they had.
+  const visibleSelectableTypes = visibleMetaobjectRows
+    .map((row) => row.type)
+    .filter((type) => allMetaobjectTypes.includes(type));
+  const visibleSelectableKeys = visibleMetafieldRows
+    .map((row) => row.identifier)
+    .filter((id) => allMetafieldIdentifiers.includes(id));
+  const allVisibleSelected =
+    visibleSelectableTypes.length + visibleSelectableKeys.length > 0 &&
+    visibleSelectableTypes.every((type) => selectedMetaobjectTypes.includes(type)) &&
+    visibleSelectableKeys.every((id) => selectedMetafieldKeys.includes(id));
+
   function setMetaobjectTypes(metaobjectTypes: string[]) {
     onChange({ ...selection, metaobjectTypes });
   }
@@ -321,8 +331,54 @@ export function DefinitionSelectionList({
     );
   }
 
+  // The type and owner dropdowns untick the rows they hide, so what is ticked
+  // on screen is exactly what gets copied. Search only hides rows.
+  function changeFilters(
+    view: "all" | "metaobjects" | "metafields",
+    ownerFilter: string,
+  ) {
+    setSelectionView(view);
+    setMetafieldOwnerFilter(ownerFilter);
+
+    const keysInView = new Set(
+      metafieldRows
+        .filter(
+          (row) =>
+            view !== "metaobjects" &&
+            (ownerFilter === "all" || row.ownerType === ownerFilter),
+        )
+        .map((row) => row.identifier),
+    );
+    const keptTypes = view === "metafields" ? [] : selectedMetaobjectTypes;
+    const keptKeys = selectedMetafieldKeys.filter((id) => keysInView.has(id));
+
+    if (
+      keptTypes.length !== selectedMetaobjectTypes.length ||
+      keptKeys.length !== selectedMetafieldKeys.length
+    ) {
+      onChange({ metaobjectTypes: keptTypes, metafieldKeys: keptKeys });
+    }
+  }
+
   function toggleSelectAll() {
-    onChange(allSelected ? { metaobjectTypes: [], metafieldKeys: [] } : selectable);
+    if (allVisibleSelected) {
+      onChange({
+        metaobjectTypes: selectedMetaobjectTypes.filter(
+          (type) => !visibleSelectableTypes.includes(type),
+        ),
+        metafieldKeys: selectedMetafieldKeys.filter(
+          (id) => !visibleSelectableKeys.includes(id),
+        ),
+      });
+      return;
+    }
+
+    onChange({
+      metaobjectTypes: [
+        ...new Set([...selectedMetaobjectTypes, ...visibleSelectableTypes]),
+      ],
+      metafieldKeys: [...new Set([...selectedMetafieldKeys, ...visibleSelectableKeys])],
+    });
   }
 
   function toggleMetaobjectsSelectAll() {
@@ -466,8 +522,9 @@ export function DefinitionSelectionList({
               style={{ width: 170 }}
               value={selectionView}
               onChange={(event) =>
-                setSelectionView(
+                changeFilters(
                   event.target.value as "all" | "metaobjects" | "metafields",
+                  metafieldOwnerFilter,
                 )
               }
               disabled={disabled}
@@ -481,7 +538,7 @@ export function DefinitionSelectionList({
               className="em-select"
               style={{ width: 190 }}
               value={metafieldOwnerFilter}
-              onChange={(event) => setMetafieldOwnerFilter(event.target.value)}
+              onChange={(event) => changeFilters(selectionView, event.target.value)}
               disabled={disabled || selectionView === "metaobjects"}
               aria-label="Filter by metafield owner type"
             >
@@ -511,10 +568,13 @@ export function DefinitionSelectionList({
             <input
               className="em-checkbox"
               type="checkbox"
-              checked={allSelected}
+              checked={allVisibleSelected}
               onChange={toggleSelectAll}
-              disabled={disabled}
-              aria-label="Select every definition"
+              disabled={
+                disabled ||
+                visibleSelectableTypes.length + visibleSelectableKeys.length === 0
+              }
+              aria-label="Select every definition shown"
             />
           </div>
           <div>Definition Name</div>
