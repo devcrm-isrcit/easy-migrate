@@ -484,7 +484,7 @@ export default function ImportExportPage() {
           <h2 className="em-page-title">Import / Export</h2>
           <p className="em-page-subtitle">
             Move metafield and metaobject definitions between stores as a CSV
-            file, without sharing an Admin API token.
+            file, without connecting the two stores.
           </p>
         </header>
 

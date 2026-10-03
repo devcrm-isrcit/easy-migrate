@@ -1,14 +1,13 @@
-import { apiVersion } from "../../shopify.server";
+import { SessionNotFoundError } from "@shopify/shopify-app-react-router/server";
+import { unauthenticated } from "../../shopify.server";
 import {
   SUPPORTED_METAFIELD_OWNER_TYPES,
   type GraphqlUserError,
   type OwnerTypeAccessResult,
 } from "./types.server";
-import { normalizeShopDomain, validateShopDomain } from "./shop-domain.server";
 
 interface SourceAdminGraphqlParams<TVariables> {
   shop: string;
-  token: string;
   query: string;
   variables?: TVariables;
 }
@@ -18,38 +17,35 @@ interface GraphqlEnvelope<TData> {
   errors?: Array<{ message: string }>;
 }
 
+/**
+ * Queries the source store with Easy Migrate's own offline session there.
+ * `shop` must come from getLinkedSourceShop, never from request input.
+ */
 export async function sourceAdminGraphql<
   TData,
   TVariables = Record<string, unknown>,
 >({
   shop,
-  token,
   query,
   variables,
 }: SourceAdminGraphqlParams<TVariables>): Promise<TData> {
-  const normalizedShop = normalizeShopDomain(shop);
-  const response = await fetch(
-    `https://${normalizedShop}/admin/api/${String(apiVersion)}/graphql.json`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": token,
-      },
-      body: JSON.stringify({ query, variables }),
-    },
-  );
+  let admin: Awaited<ReturnType<typeof unauthenticated.admin>>["admin"];
 
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw new Error("Source token was rejected by Shopify.");
+  try {
+    ({ admin } = await unauthenticated.admin(shop));
+  } catch (error) {
+    if (error instanceof SessionNotFoundError) {
+      throw new Error(
+        `Easy Migrate is no longer installed on ${shop}. Install it there and connect again.`,
+      );
     }
 
-    throw new Error(
-      `Source store request failed with status ${response.status}.`,
-    );
+    throw error;
   }
 
+  const response = await admin.graphql(query, {
+    variables: variables as Record<string, unknown> | undefined,
+  });
   const payload = (await response.json()) as GraphqlEnvelope<TData>;
 
   if (payload.errors?.length) {
@@ -63,23 +59,12 @@ export async function sourceAdminGraphql<
   return payload.data;
 }
 
-export async function validateSourceToken(shop: string, token: string) {
-  const shopError = validateShopDomain(shop);
-
-  if (shopError) {
-    throw new Error(shopError);
-  }
-
-  if (!token.trim()) {
-    throw new Error("Source Admin API access token is required.");
-  }
-
+export async function validateSourceConnection(shop: string) {
   const data = await sourceAdminGraphql<{
     shop: { name: string; myshopifyDomain: string };
     metaobjectDefinitions: { nodes: Array<{ id: string }> };
   }>({
     shop,
-    token,
     query: `#graphql
       query ValidateSourceConnection {
         shop {
@@ -104,7 +89,6 @@ export async function validateSourceToken(shop: string, token: string) {
         { ownerType: string }
       >({
         shop,
-        token,
         query: `#graphql
           query ValidateMetafieldAccess($ownerType: MetafieldOwnerType!) {
             metafieldDefinitions(first: 1, ownerType: $ownerType) {

@@ -1,5 +1,4 @@
-import { redirect, Form, useLoaderData } from "react-router";
-import { login } from "../../shopify.server";
+import { redirect } from "react-router";
 import styles from "./styles.module.css";
 
 export const loader = async ({ request }) => {
@@ -9,43 +8,34 @@ export const loader = async ({ request }) => {
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
 
-  return { showForm: Boolean(login) };
+  return null;
 };
 
+// Installs and logins start from the Shopify admin, so this page never asks
+// for a shop domain.
 export default function App() {
-  const { showForm } = useLoaderData();
-
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>Easy Migrate</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          Copy metafield definitions, metaobjects and files between your
+          Shopify stores. Open Easy Migrate from your Shopify admin to get
+          started.
         </p>
-        {showForm && (
-          <Form className={styles.form} method="post" action="/auth/login">
-            <label className={styles.label}>
-              <span>Shop domain</span>
-              <input className={styles.input} type="text" name="shop" />
-              <span>e.g: my-shop-domain.myshopify.com</span>
-            </label>
-            <button className={styles.button} type="submit">
-              Log in
-            </button>
-          </Form>
-        )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Definition sync</strong>. Find the metafield and
+            metaobject definitions a store is missing and create them in one
+            run.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Files migration</strong>. Move images, videos and other
+            files from one of your stores to another.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>CSV import and export</strong>. Move definitions as a file
+            when the two stores cannot be connected.
           </li>
         </ul>
       </div>

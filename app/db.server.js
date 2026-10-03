@@ -11,7 +11,9 @@ function hasDefinitionSyncModels(client) {
       client?.definitionSyncLog &&
       client?.fileSyncJob &&
       client?.fileSyncLog &&
-      client?.storeConnectionHistory,
+      client?.storeConnectionHistory &&
+      client?.sourceLink &&
+      client?.connectionCode,
   );
 }
 

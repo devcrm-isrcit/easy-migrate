@@ -20,7 +20,7 @@ import {
   StatTile,
 } from "../components/easy-migrate-ui";
 import { fetchFileMigrationPreview, runFileMigration } from "../lib/file-sync.server";
-import { readStoredSourceCredential } from "../lib/source-credentials.client";
+import { getLinkedSourceShop } from "../lib/source-link.server";
 import { authenticate } from "../shopify.server";
 
 interface PreviewFile {
@@ -65,7 +65,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const { session } = await authenticate.admin(request);
 
   return {
-    targetShop: session.shop,
+    sourceShop: await getLinkedSourceShop(session.shop),
   };
 }
 
@@ -73,13 +73,13 @@ export async function action({ request }: ActionFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "preview");
-  const sourceShop = String(formData.get("sourceShop") || "").trim();
-  const sourceToken = String(formData.get("sourceToken") || "").trim();
+  // Live reads only ever go to the store this shop linked with a code.
+  const sourceShop = await getLinkedSourceShop(session.shop);
 
-  if (!sourceShop || !sourceToken) {
+  if (!sourceShop) {
     return {
       ok: false,
-      error: "Enter a source store domain and token first.",
+      error: "Connect a source store on the Dashboard first.",
     };
   }
 
@@ -87,8 +87,6 @@ export async function action({ request }: ActionFunctionArgs) {
     try {
       const preview = await fetchFileMigrationPreview({
         sourceShop,
-        sourceToken,
-        targetShop: session.shop,
         admin,
       });
 
@@ -125,7 +123,6 @@ export async function action({ request }: ActionFunctionArgs) {
   try {
     const result = await runFileMigration({
       sourceShop,
-      sourceToken,
       targetShop: session.shop,
       admin,
       selectedFileIds,
@@ -164,7 +161,7 @@ function FileThumb({ file }: { file: PreviewFile }) {
 
 export default function FileMigrationPage() {
   const shopify = useAppBridge();
-  const { targetShop } = useLoaderData<typeof loader>();
+  const { sourceShop } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const previewFetcher = useFetcher<typeof action>();
   const migrationFetcher = useFetcher<typeof action>();
@@ -212,15 +209,12 @@ export default function FileMigrationPage() {
       }
     | undefined;
   const files = preview?.files ?? [];
-  const [sourceShop, setSourceShop] = useState("");
-  const [sourceToken, setSourceToken] = useState("");
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>("transferable");
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
-  const [hasStoredCredential, setHasStoredCredential] = useState(false);
-  const [isInitializing, setIsInitializing] = useState(true);
+  const [isInitializing, setIsInitializing] = useState(Boolean(sourceShop));
   const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
   const [previewFileFailed, setPreviewFileFailed] = useState(false);
   const isLoadingPreview = previewFetcher.state !== "idle";
@@ -260,24 +254,13 @@ export default function FileMigrationPage() {
     normalizedQuery.length > 0 || typeFilter !== "all" || scopeFilter !== "everything";
 
   useEffect(() => {
-    const storedCredential = readStoredSourceCredential(targetShop);
-
-    if (!storedCredential) {
-      setHasStoredCredential(false);
+    if (!sourceShop) {
       setIsInitializing(false);
       return;
     }
 
-    setHasStoredCredential(true);
-    setSourceShop(storedCredential.sourceShop);
-    setSourceToken(storedCredential.sourceToken);
-
-    const formData = new FormData();
-    formData.set("intent", "preview");
-    formData.set("sourceShop", storedCredential.sourceShop);
-    formData.set("sourceToken", storedCredential.sourceToken);
-    previewFetcher.submit(formData, { method: "post" });
-  }, [targetShop]);
+    previewFetcher.submit({ intent: "preview" }, { method: "post" });
+  }, [sourceShop]);
 
   useEffect(() => {
     if (!previewData) {
@@ -347,8 +330,6 @@ export default function FileMigrationPage() {
   function handleMigrate() {
     const formData = new FormData();
     formData.set("intent", "migrate");
-    formData.set("sourceShop", sourceShop);
-    formData.set("sourceToken", sourceToken);
     formData.set("selectedFileIds", JSON.stringify(selectedFileIds));
     migrationFetcher.submit(formData, { method: "post" });
   }
@@ -405,12 +386,12 @@ export default function FileMigrationPage() {
           </div>
         ) : null}
 
-        {!hasStoredCredential && !isLoadingPreview ? (
+        {!sourceShop && !isLoadingPreview ? (
           <div className="em-card">
             <EmptyState
               icon="link_off"
               title="No source store connected"
-              body="Files Migration uses the same browser session as the dashboard. Connect a source store first."
+              body="Files Migration uses the source store connected on the Dashboard. Connect one there first."
               action={
                 <Button
                   variant="primary"

@@ -11,7 +11,6 @@ type AdminGraphqlClient = Parameters<typeof targetAdminGraphql>[0];
 
 interface FetchSourceOptions {
   shop: string;
-  token: string;
 }
 
 interface MetafieldDefinitionsResponse {
@@ -126,7 +125,6 @@ export async function fetchMetafieldDefinitions(options: {
             (query, variables) =>
               sourceAdminGraphql({
                 shop: options.source!.shop,
-                token: options.source!.token,
                 query,
                 variables,
               }),

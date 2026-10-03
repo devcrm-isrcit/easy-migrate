@@ -262,7 +262,7 @@ function normalizeFileNode(
   return null;
 }
 
-async function fetchFilesFromSource(source: { shop: string; token: string }) {
+async function fetchFilesFromSource(source: { shop: string }) {
   const files: FileRecord[] = [];
   let hasNextPage = true;
   let cursor: string | null = null;
@@ -273,7 +273,6 @@ async function fetchFilesFromSource(source: { shop: string; token: string }) {
       { after?: string | null }
     >({
       shop: source.shop,
-      token: source.token,
       query: `#graphql
         query SourceFiles($after: String) {
           files(first: 100, after: $after) {
@@ -441,19 +440,12 @@ async function createTargetFile(
 
 export async function fetchFileMigrationPreview({
   sourceShop,
-  sourceToken,
-  targetShop,
   admin,
 }: {
   sourceShop: string;
-  sourceToken: string;
-  targetShop: string;
   admin: AdminGraphqlClient;
 }) {
-  const source = {
-    shop: sourceShop,
-    token: sourceToken,
-  };
+  const source = { shop: sourceShop };
 
   const [sourceFiles, targetSignatures] = await Promise.all([
     fetchFilesFromSource(source),
@@ -483,21 +475,16 @@ export async function fetchFileMigrationPreview({
 
 export async function runFileMigration({
   sourceShop,
-  sourceToken,
   targetShop,
   admin,
   selectedFileIds,
 }: {
   sourceShop: string;
-  sourceToken: string;
   targetShop: string;
   admin: AdminGraphqlClient;
   selectedFileIds?: string[];
 }) {
-  const source = {
-    shop: sourceShop,
-    token: sourceToken,
-  };
+  const source = { shop: sourceShop };
 
   const [sourceFiles, targetSignatures] = await Promise.all([
     fetchFilesFromSource(source),

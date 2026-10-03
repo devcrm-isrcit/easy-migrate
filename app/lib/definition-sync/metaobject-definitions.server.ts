@@ -28,7 +28,6 @@ function toValidationInput(validations: ValidationRule[] | undefined) {
 
 interface FetchSourceOptions {
   shop: string;
-  token: string;
 }
 
 interface MetaobjectDefinitionsResponse {
@@ -171,7 +170,6 @@ export async function fetchMetaobjectDefinitions(options: {
       ? await fetchAll((query, variables) =>
           sourceAdminGraphql({
             shop: options.source!.shop,
-            token: options.source!.token,
             query,
             variables,
           }),

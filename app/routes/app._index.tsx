@@ -40,36 +40,39 @@ import {
   runDefinitionSync,
 } from "../lib/definition-sync/sync.server";
 import { deleteAppCreatedDefinitions } from "../lib/definition-sync/delete-definitions.server";
-import { validateSourceToken } from "../lib/definition-sync/source-admin.server";
-import {
-  normalizeShopDomain,
-  validateShopDomain,
-} from "../lib/definition-sync/shop-domain.server";
+import { validateSourceConnection } from "../lib/definition-sync/source-admin.server";
 import { startSyncProgress } from "../lib/definition-sync/progress.server";
 import type { DefinitionScanPreview as ServerDefinitionScanPreview } from "../lib/definition-sync/types.shared";
 import {
-  clearStoredSourceCredential,
-  readStoredSourceCredential,
-  writeStoredSourceCredential,
-} from "../lib/source-credentials.client";
+  createConnectionCode,
+  getLinkedSourceShop,
+  getLinkedTargetShops,
+  redeemConnectionCode,
+  removeSourceLink,
+} from "../lib/source-link.server";
+import { CODE_TTL_MINUTES } from "../lib/source-link.shared";
 import { authenticate } from "../shopify.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
 
-  const [latestJob, shopResponse] = await Promise.all([
-    getLatestSyncJob(session.shop),
-    admin.graphql(`#graphql
-      query DashboardShop {
-        shop { name myshopifyDomain }
-      }
-    `),
-  ]);
+  const [latestJob, shopResponse, sourceShop, connectedTargets] =
+    await Promise.all([
+      getLatestSyncJob(session.shop),
+      admin.graphql(`#graphql
+        query DashboardShop {
+          shop { name myshopifyDomain }
+        }
+      `),
+      getLinkedSourceShop(session.shop),
+      getLinkedTargetShops(session.shop),
+    ]);
 
   const shopPayload = await shopResponse.json();
   return {
     shop: shopPayload.data.shop,
-    adminAccessToken: session.accessToken,
+    sourceShop,
+    connectedTargets,
     latestJob: latestJob
       ? {
           id: latestJob.id,
@@ -97,23 +100,21 @@ export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "save");
 
-  const sourceShopInput = String(formData.get("sourceShop") || "");
-  const token = String(formData.get("sourceToken") || "");
-  const normalizedShop = normalizeShopDomain(sourceShopInput);
+  // Live reads only ever go to the store this shop linked with a code.
+  const sourceShop = await getLinkedSourceShop(session.shop);
 
   if (intent === "scan") {
-    if (!normalizedShop || !token.trim()) {
+    if (!sourceShop) {
       return {
         ok: false,
         intent,
-        error: "Enter a source store domain and token first.",
+        error: "Connect a source store first.",
       };
     }
 
     try {
       const preview = await buildDefinitionScanPreview({
-        sourceShop: normalizedShop,
-        sourceToken: token,
+        sourceShop,
         targetShop: session.shop,
         admin,
       });
@@ -131,11 +132,11 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   if (intent === "sync") {
-    if (!normalizedShop || !token.trim()) {
+    if (!sourceShop) {
       return {
         ok: false,
         intent,
-        error: "Enter a source store domain and token first.",
+        error: "Connect a source store first.",
       };
     }
 
@@ -163,8 +164,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
     try {
       const result = await runDefinitionSync({
-        sourceShop: normalizedShop,
-        sourceToken: token,
+        sourceShop,
         targetShop: session.shop,
         admin,
         selectedMetaobjectTypes,
@@ -193,17 +193,38 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   if (intent === "clear_connection") {
+    await removeSourceLink(session.shop);
     await createStoreConnectionHistory({
       targetShop: session.shop,
-      sourceShop: normalizedShop || null,
+      sourceShop,
       status: "cleared",
       event: "session_cleared",
-      message: normalizedShop
-        ? `Cleared the saved browser session for ${normalizedShop}.`
-        : "Cleared the saved browser session for the source store connection.",
+      message: sourceShop
+        ? `Disconnected the source store ${sourceShop}.`
+        : "Disconnected the source store.",
     });
 
-    return { ok: true, intent, message: "Source session cleared." };
+    return { ok: true, intent, message: "Source store disconnected." };
+  }
+
+  if (intent === "create_code") {
+    const { code } = await createConnectionCode(session.shop);
+    return { ok: true, intent, code };
+  }
+
+  if (intent === "disconnect_target") {
+    const targetShop = String(formData.get("targetShop") || "");
+    // Scoped to this shop as the source, so a store can only cut its own links.
+    await removeSourceLink(targetShop, session.shop);
+    await createStoreConnectionHistory({
+      targetShop,
+      sourceShop: session.shop,
+      status: "cleared",
+      event: "session_cleared",
+      message: `${session.shop} removed this store's access to it as a source.`,
+    });
+
+    return { ok: true, intent };
   }
 
   if (intent === "delete_definitions") {
@@ -239,28 +260,21 @@ export async function action({ request }: ActionFunctionArgs) {
     }
   }
 
-  const domainError = validateShopDomain(sourceShopInput);
+  let linkedShop: string;
 
-  if (domainError) {
-    return {
-      ok: false,
-      intent,
-      error: domainError,
-      fieldErrors: { sourceShop: domainError },
-    };
-  }
-
-  if (!token.trim()) {
-    return {
-      ok: false,
-      intent,
-      error: "Source Admin API access token is required.",
-      fieldErrors: { sourceToken: "Source Admin API access token is required." },
-    };
+  try {
+    linkedShop = await redeemConnectionCode(
+      session.shop,
+      String(formData.get("code") || ""),
+    );
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to connect.";
+    return { ok: false, intent, error: message, fieldErrors: { code: message } };
   }
 
   try {
-    const validation = await validateSourceToken(normalizedShop, token);
+    const validation = await validateSourceConnection(linkedShop);
     await createStoreConnectionHistory({
       targetShop: session.shop,
       sourceShop: validation.sourceShop,
@@ -273,13 +287,13 @@ export async function action({ request }: ActionFunctionArgs) {
       ok: true,
       intent,
       message: `Connected to ${validation.shopName} (${validation.sourceShop}).`,
-      sourceShop: validation.sourceShop,
-      tokenStatus: "valid",
     };
   } catch (error) {
+    // A link the app can't read through is no use, so don't keep it.
+    await removeSourceLink(session.shop);
     await createStoreConnectionHistory({
       targetShop: session.shop,
-      sourceShop: normalizedShop || null,
+      sourceShop: linkedShop,
       status: "invalid",
       event: "validation_failed",
       message:
@@ -311,19 +325,16 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 export default function DefinitionSyncDashboard() {
-  const { adminAccessToken, shop, latestJob } = useLoaderData<typeof loader>();
+  const { shop, sourceShop, connectedTargets, latestJob } =
+    useLoaderData<typeof loader>();
   const navigate = useNavigate();
 
   const connectionFetcher = useFetcher<typeof action>();
   const scanFetcher = useFetcher<typeof action>();
   const syncFetcher = useFetcher<typeof action>();
-  const lastSubmittedSourceTokenRef = useRef("");
   const latestSyncResultRef = useRef<HTMLDivElement | null>(null);
-  const connectionFormRef = useRef<HTMLFormElement | null>(null);
 
-  const [sourceShop, setSourceShop] = useState("");
-  const [sourceToken, setSourceToken] = useState("");
-  const [tokenStatus, setTokenStatus] = useState<string>("unchecked");
+  const [connectionCode, setConnectionCode] = useState("");
   const [selectedMetaobjectTypes, setSelectedMetaobjectTypes] = useState<
     string[]
   >([]);
@@ -331,21 +342,9 @@ export default function DefinitionSyncDashboard() {
     [],
   );
   const [copyContent, setCopyContent] = useState(false);
-  const [showConnectionForm, setShowConnectionForm] = useState(true);
-  const [credentialsLoaded, setCredentialsLoaded] = useState(false);
+  // True while a connected merchant is entering a code for a different store.
+  const [showConnectionForm, setShowConnectionForm] = useState(false);
   const [scannedAt, setScannedAt] = useState<string | null>(null);
-  const [showSourceToken, setShowSourceToken] = useState(false);
-  useEffect(() => {
-    const stored = readStoredSourceCredential(shop.myshopifyDomain);
-    if (stored) {
-      setSourceShop(stored.sourceShop);
-      setSourceToken(stored.sourceToken);
-      setTokenStatus("valid");
-      setShowConnectionForm(false);
-      lastSubmittedSourceTokenRef.current = stored.sourceToken;
-    }
-    setCredentialsLoaded(true);
-  }, [shop.myshopifyDomain]);
 
   const isSaving = connectionFetcher.state !== "idle";
   const isScanning = scanFetcher.state !== "idle";
@@ -360,8 +359,11 @@ export default function DefinitionSyncDashboard() {
         error?: string;
       }
     | undefined;
+  // A scan of a store this shop is no longer linked to must not be synced.
   const preview =
-    scanData?.intent === "scan" && scanData?.ok
+    scanData?.intent === "scan" &&
+    scanData?.ok &&
+    scanData.preview?.sourceShop === sourceShop
       ? (scanData.preview as ScanPreview)
       : null;
   const scanError =
@@ -385,9 +387,7 @@ export default function DefinitionSyncDashboard() {
         intent: string;
         message?: string;
         error?: string;
-        sourceShop?: string;
-        tokenStatus?: string;
-        fieldErrors?: { sourceShop?: string; sourceToken?: string };
+        fieldErrors?: { code?: string };
       }
     | undefined;
 
@@ -398,40 +398,22 @@ export default function DefinitionSyncDashboard() {
     setScannedAt(preview ? new Date().toISOString() : null);
   }, [preview]);
 
+  // The loader revalidates after each action, so `sourceShop` follows the
+  // saved link on its own; only local selection state needs resetting.
   useEffect(() => {
-    if (!connectionData) {
+    if (!connectionData?.ok) {
       return;
     }
 
-    if (connectionData.intent === "clear_connection" && connectionData.ok) {
-      clearStoredSourceCredential(shop.myshopifyDomain);
-      setSourceShop("");
-      setSourceToken("");
-      setTokenStatus("unchecked");
+    if (connectionData.intent === "clear_connection") {
       setSelectedMetaobjectTypes([]);
       setSelectedMetafieldKeys([]);
       setCopyContent(false);
-      setShowConnectionForm(true);
-      return;
     }
 
-    if (connectionData.intent !== "save") {
-      return;
-    }
-
-    if (!connectionData.ok || !connectionData.sourceShop) {
-      setTokenStatus("invalid");
-      return;
-    }
-
-    setSourceShop(connectionData.sourceShop);
-    setTokenStatus(connectionData.tokenStatus ?? "valid");
-    writeStoredSourceCredential(shop.myshopifyDomain, {
-      sourceShop: connectionData.sourceShop,
-      sourceToken: lastSubmittedSourceTokenRef.current,
-    });
+    setConnectionCode("");
     setShowConnectionForm(false);
-  }, [connectionData, shop.myshopifyDomain]);
+  }, [connectionData]);
 
   useEffect(() => {
     if (syncData?.intent !== "sync" || !syncData.ok) {
@@ -461,11 +443,7 @@ export default function DefinitionSyncDashboard() {
     });
   }, [syncData, syncProgress.visible]);
 
-  const hasConnectionDraft = sourceShop.trim().length > 0 || sourceToken.trim().length > 0;
-  const hasVerifiedConnection =
-    sourceShop.trim().length > 0 &&
-    sourceToken.trim().length > 0 &&
-    tokenStatus === "valid";
+  const hasVerifiedConnection = Boolean(sourceShop);
   const totalSelectedCount =
     selectedMetaobjectTypes.length + selectedMetafieldKeys.length;
   // Missing definitions to create plus existing ones that differ, as the list
@@ -475,49 +453,26 @@ export default function DefinitionSyncDashboard() {
   );
 
   function handleSave() {
-    const formData = connectionFormRef.current
-      ? new FormData(connectionFormRef.current)
-      : null;
-    const submittedSourceShop = String(
-      formData?.get("sourceShop") ?? sourceShop,
-    ).trim();
-    const submittedSourceToken = String(
-      formData?.get("sourceToken") ?? sourceToken,
-    ).trim();
-
-    setSourceShop(submittedSourceShop);
-    setSourceToken(submittedSourceToken);
-    lastSubmittedSourceTokenRef.current = submittedSourceToken;
-
     connectionFetcher.submit(
-      {
-        intent: "save",
-        sourceShop: submittedSourceShop,
-        sourceToken: submittedSourceToken,
-      },
+      { intent: "save", code: connectionCode },
       { method: "post" },
     );
   }
 
   function handleRemove() {
     connectionFetcher.submit(
-      { intent: "clear_connection", sourceShop },
+      { intent: "clear_connection" },
       { method: "post" },
     );
   }
 
   function handleScan() {
-    scanFetcher.submit(
-      { intent: "scan", sourceShop, sourceToken },
-      { method: "post" },
-    );
+    scanFetcher.submit({ intent: "scan" }, { method: "post" });
   }
 
   function handleSync() {
     const fd = new FormData();
     fd.set("intent", "sync");
-    fd.set("sourceShop", sourceShop);
-    fd.set("sourceToken", sourceToken);
     fd.set("selectedMetaobjectTypes", JSON.stringify(selectedMetaobjectTypes));
     fd.set("selectedMetafieldKeys", JSON.stringify(selectedMetafieldKeys));
     fd.set("copyContent", copyContent ? "true" : "false");
@@ -528,21 +483,6 @@ export default function DefinitionSyncDashboard() {
   function clearSelection() {
     setSelectedMetaobjectTypes([]);
     setSelectedMetafieldKeys([]);
-  }
-
-  if (!credentialsLoaded) {
-    return (
-      <div className="em-app">
-        <div className="em-page">
-          <div className="em-card">
-            <div className="em-center">
-              <Spinner size={32} />
-              <span className="em-body-sm">Loading…</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
   }
 
   const conflictingMetafields = preview?.metafields.conflicts ?? [];
@@ -591,32 +531,13 @@ export default function DefinitionSyncDashboard() {
                   </div>
                 </div>
               ) : (
-                <>
-                  {hasConnectionDraft && tokenStatus === "invalid" ? (
-                    <Banner tone="critical" title="Source token was rejected">
-                      Check the domain and Admin API token in the source store
-                      card, then connect again.
-                    </Banner>
-                  ) : null}
-                  <div className="em-card">
-                    <EmptyState
-                      icon="link"
-                      title="Connect a source store to begin"
-                      body="To sync definitions, you first need to establish a connection with the source store by providing its domain and an admin API token."
-                      action={
-                        <a
-                          className="em-btn em-btn--secondary"
-                          href="https://help.shopify.com/en/manual/apps/app-types/custom-apps"
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          <Icon name="key" size={18} />
-                          How to create an Admin token
-                        </a>
-                      }
-                    />
-                  </div>
-                </>
+                <div className="em-card">
+                  <EmptyState
+                    icon="link"
+                    title="Connect a source store to begin"
+                    body="Install Easy Migrate on the store you want to copy from. Open it there, generate a connection code, then enter the code in the Source store card."
+                  />
+                </div>
               )
             ) : (
               <>
@@ -930,22 +851,14 @@ export default function DefinitionSyncDashboard() {
                 </div>
                 <span
                   className={
-                    tokenStatus === "valid"
-                      ? "em-badge em-badge--success"
-                      : tokenStatus === "invalid"
-                        ? "em-badge em-badge--critical"
-                        : "em-badge"
+                    sourceShop ? "em-badge em-badge--success" : "em-badge"
                   }
                 >
-                  {tokenStatus === "valid"
-                    ? "Connected"
-                    : tokenStatus === "invalid"
-                      ? "Token invalid"
-                      : "Not connected"}
+                  {sourceShop ? "Connected" : "Not connected"}
                 </span>
               </div>
 
-              {sourceShop && sourceToken && !showConnectionForm ? (
+              {sourceShop && !showConnectionForm ? (
                 <div className="em-card__body">
                   <div className="em-conn-tile">
                     <span className="em-label-caps em-conn-tile__label">
@@ -986,7 +899,8 @@ export default function DefinitionSyncDashboard() {
                   </div>
 
                   <p className="em-body-sm">
-                    Source credentials are stored in this browser only.
+                    Easy Migrate reads the source store through its own
+                    install there. Disconnect any time.
                   </p>
 
                   <div className="em-row-inline">
@@ -994,16 +908,15 @@ export default function DefinitionSyncDashboard() {
                       size="sm"
                       onClick={() => setShowConnectionForm(true)}
                     >
-                      Update connection
+                      Change source store
                     </Button>
                     <Button size="sm" variant="critical" onClick={handleRemove}>
-                      Clear session
+                      Disconnect
                     </Button>
                   </div>
                 </div>
               ) : (
                 <form
-                  ref={connectionFormRef}
                   onSubmit={(event) => {
                     event.preventDefault();
                     handleSave();
@@ -1017,77 +930,33 @@ export default function DefinitionSyncDashboard() {
                     ) : null}
 
                     <Field
-                      label="Store domain"
-                      htmlFor="store-domain"
-                      help="Enter store name only — .myshopify.com is added for you."
-                      error={connectionData?.fieldErrors?.sourceShop}
+                      label="Connection code"
+                      htmlFor="connection-code"
+                      help={`In the store you want to copy from, open Easy Migrate and generate a code under "Use this store as a source". Codes work once and expire after ${String(CODE_TTL_MINUTES)} minutes.`}
+                      error={connectionData?.fieldErrors?.code}
                     >
                       <input
-                        id="store-domain"
-                        name="sourceShop"
+                        id="connection-code"
+                        name="code"
                         className={
-                          connectionData?.fieldErrors?.sourceShop
+                          connectionData?.fieldErrors?.code
                             ? "em-input em-input--code em-input--invalid"
                             : "em-input em-input--code"
                         }
                         type="text"
                         autoComplete="off"
-                        placeholder="example.myshopify.com"
-                        value={sourceShop.replace(/\.myshopify\.com$/i, "")}
+                        spellCheck={false}
+                        placeholder="ABCD-2345"
+                        value={connectionCode}
                         onChange={(event) =>
-                          setSourceShop(
-                            event.target.value.replace(/\.myshopify\.com$/i, ""),
-                          )
+                          setConnectionCode(event.target.value)
                         }
                       />
-                    </Field>
-
-                    <Field
-                      label="Admin API token"
-                      htmlFor="admin-token"
-                      help={
-                        <>
-                          Requires{" "}
-                          <code className="em-code-chip">
-                            read_metaobject_definitions
-                          </code>{" "}
-                          scope.
-                        </>
-                      }
-                      error={connectionData?.fieldErrors?.sourceToken}
-                    >
-                      <input
-                        id="admin-token"
-                        name="sourceToken"
-                        className={
-                          connectionData?.fieldErrors?.sourceToken
-                            ? "em-input em-input--code em-input--with-action em-input--invalid"
-                            : "em-input em-input--code em-input--with-action"
-                        }
-                        type={showSourceToken ? "text" : "password"}
-                        autoComplete="off"
-                        placeholder="shpat_..."
-                        value={sourceToken}
-                        onChange={(event) => setSourceToken(event.target.value)}
-                      />
-                      <button
-                        type="button"
-                        className="em-field__action"
-                        onClick={() => setShowSourceToken((current) => !current)}
-                        aria-label={
-                          showSourceToken ? "Hide token" : "Show token"
-                        }
-                      >
-                        <Icon
-                          name={showSourceToken ? "visibility_off" : "visibility"}
-                          size={18}
-                        />
-                      </button>
                     </Field>
                   </div>
 
                   <div className="em-card__footer" style={{ borderTop: "none", paddingTop: 0 }}>
-                    {sourceShop && sourceToken ? (
+                    {sourceShop ? (
                       <Button onClick={() => setShowConnectionForm(false)}>
                         Cancel
                       </Button>
@@ -1096,7 +965,8 @@ export default function DefinitionSyncDashboard() {
                       type="submit"
                       variant="primary"
                       loading={isSaving}
-                      fullWidth={!(sourceShop && sourceToken)}
+                      disabled={!connectionCode.trim()}
+                      fullWidth={!sourceShop}
                     >
                       Connect store
                     </Button>
@@ -1105,7 +975,7 @@ export default function DefinitionSyncDashboard() {
               )}
             </div>
 
-            <AdminTokenCard token={adminAccessToken} />
+            <ConnectionCodeCard connectedTargets={connectedTargets} />
 
             <DangerZoneCard shopDomain={shop.myshopifyDomain} />
           </aside>
@@ -1150,17 +1020,68 @@ export default function DefinitionSyncDashboard() {
   );
 }
 
-function AdminTokenCard({ token }: { token?: string | null }) {
-  const [isVisible, setIsVisible] = useState(false);
+function ConnectionCodeCard({
+  connectedTargets,
+}: {
+  connectedTargets: string[];
+}) {
+  const codeFetcher = useFetcher<typeof action>();
+  const disconnectFetcher = useFetcher<typeof action>();
   const [copied, setCopied] = useState(false);
-  const displayToken = token ?? "";
+  const [timer, setTimer] = useState<{ code: string; deadline: number } | null>(
+    null,
+  );
+  const [now, setNow] = useState(() => Date.now());
 
-  async function handleCopy() {
-    if (!displayToken) {
+  const codeData = codeFetcher.data as
+    | { ok: boolean; intent: string; code?: string }
+    | undefined;
+  const code = codeData?.intent === "create_code" ? codeData.code : undefined;
+  // Shown as two groups of four so it is easy to read out and retype.
+  const displayCode = code ? `${code.slice(0, 4)}-${code.slice(4)}` : "";
+
+  // Counted from when the code arrived rather than from the server's expiry
+  // time, so a merchant's wrong system clock can't skew the countdown.
+  useEffect(() => {
+    if (!codeData?.code) {
       return;
     }
 
-    await navigator.clipboard.writeText(displayToken);
+    const deadline = Date.now() + CODE_TTL_MINUTES * 60_000;
+    setTimer({ code: codeData.code, deadline });
+    setNow(Date.now());
+
+    const interval = window.setInterval(() => {
+      const current = Date.now();
+      setNow(current);
+
+      if (current >= deadline) {
+        window.clearInterval(interval);
+      }
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [codeData]);
+
+  // Until the effect has stored this code's deadline, show the full time
+  // rather than the previous code's (possibly expired) countdown.
+  const deadline = timer && timer.code === code ? timer.deadline : null;
+  const secondsLeft =
+    deadline === null
+      ? CODE_TTL_MINUTES * 60
+      : Math.max(0, Math.ceil((deadline - now) / 1000));
+  const isExpired = Boolean(code) && secondsLeft === 0;
+  const countdown = `${String(Math.floor(secondsLeft / 60))}:${String(
+    secondsLeft % 60,
+  ).padStart(2, "0")}`;
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(displayCode);
+    } catch {
+      return;
+    }
+
     setCopied(true);
 
     window.setTimeout(() => {
@@ -1172,42 +1093,77 @@ function AdminTokenCard({ token }: { token?: string | null }) {
     <div className="em-card em-card--flush">
       <div className="em-card__header">
         <div>
-          <h3 className="em-section-heading">Admin token</h3>
+          <h3 className="em-section-heading">Use this store as a source</h3>
           <p className="em-body-sm" style={{ marginTop: 4 }}>
-            This store, as a source
+            Let another of your stores copy from this one
           </p>
         </div>
       </div>
       <div className="em-card__body">
         <p className="em-body-sm">
-          Use this token when this store needs to act as the source store in
-          another Easy Migrate session.
+          {`Generate a code here, then enter it in Easy Migrate on the store you want to copy to. The code works once and expires after ${String(CODE_TTL_MINUTES)} minutes.`}
         </p>
 
-        {displayToken ? (
+        {code && !isExpired ? (
           <>
             <div className="em-conn-tile">
-              <span className="em-code" style={{ overflowWrap: "anywhere" }}>
-                {isVisible
-                  ? displayToken
-                  : `${displayToken.slice(0, 6)}${"•".repeat(12)}${displayToken.slice(-4)}`}
-              </span>
+              <span className="em-code">{displayCode}</span>
             </div>
-            <div className="em-row-inline">
-              <LinkButton
-                onClick={() => setIsVisible((current) => !current)}
-                icon={isVisible ? "visibility_off" : "visibility"}
-              >
-                {isVisible ? "Hide token" : "Reveal token"}
-              </LinkButton>
-              <LinkButton onClick={handleCopy} icon="content_copy">
-                {copied ? "Copied" : "Copy token"}
-              </LinkButton>
-            </div>
+            <p
+              className="em-body-sm"
+              style={{ fontVariantNumeric: "tabular-nums" }}
+            >
+              {`Expires in ${countdown}`}
+            </p>
           </>
-        ) : (
-          <p className="em-body-sm">No token available for this session.</p>
-        )}
+        ) : null}
+
+        {isExpired ? (
+          <p className="em-body-sm" style={{ color: "var(--em-critical)" }}>
+            This code has expired. Generate a new one.
+          </p>
+        ) : null}
+
+        <div className="em-row-inline">
+          <Button
+            size="sm"
+            icon="key"
+            loading={codeFetcher.state !== "idle"}
+            onClick={() =>
+              codeFetcher.submit({ intent: "create_code" }, { method: "post" })
+            }
+          >
+            {code ? "Generate new code" : "Generate code"}
+          </Button>
+          {code && !isExpired ? (
+            <LinkButton onClick={handleCopy} icon="content_copy">
+              {copied ? "Copied" : "Copy"}
+            </LinkButton>
+          ) : null}
+        </div>
+
+        {connectedTargets.length > 0 ? (
+          <>
+            <span className="em-label-caps">Stores copying from this store</span>
+            {connectedTargets.map((targetShop) => (
+              <div className="em-row-between" key={targetShop}>
+                <span className="em-body-sm">{targetShop}</span>
+                <LinkButton
+                  tone="critical"
+                  disabled={disconnectFetcher.state !== "idle"}
+                  onClick={() =>
+                    disconnectFetcher.submit(
+                      { intent: "disconnect_target", targetShop },
+                      { method: "post" },
+                    )
+                  }
+                >
+                  Remove
+                </LinkButton>
+              </div>
+            ))}
+          </>
+        ) : null}
       </div>
     </div>
   );

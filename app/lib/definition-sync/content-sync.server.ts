@@ -58,7 +58,7 @@ interface MetaobjectsQueryResponse {
 }
 
 async function fetchFieldTypes(
-  source: { shop: string; token: string },
+  source: { shop: string },
   type: string,
 ): Promise<Map<string, string>> {
   const data: {
@@ -67,7 +67,6 @@ async function fetchFieldTypes(
     } | null;
   } = await sourceAdminGraphql({
     shop: source.shop,
-    token: source.token,
     query: `#graphql
       query MetaobjectFieldTypes($type: String!) {
         metaobjectDefinitionByType(type: $type) {
@@ -91,7 +90,7 @@ async function fetchFieldTypes(
 }
 
 async function fetchSourceFileUrl(
-  source: { shop: string; token: string },
+  source: { shop: string },
   fileGid: string,
 ): Promise<{ url: string; contentType: "IMAGE" | "VIDEO" | "GENERIC_FILE" } | null> {
   try {
@@ -104,7 +103,6 @@ async function fetchSourceFileUrl(
       } | null;
     } = await sourceAdminGraphql({
       shop: source.shop,
-      token: source.token,
       query: `#graphql
         query FetchFileUrl($id: ID!) {
           node(id: $id) {
@@ -174,7 +172,7 @@ async function createFileInTarget(
 }
 
 async function migrateFile(
-  source: { shop: string; token: string },
+  source: { shop: string },
   admin: AdminGraphqlClient,
   sourceGid: string,
   cache: Map<string, string | null>,
@@ -193,7 +191,7 @@ async function migrateFile(
 }
 
 async function processFields(
-  source: { shop: string; token: string },
+  source: { shop: string },
   admin: AdminGraphqlClient,
   fields: Array<{ key: string; value: string | null }>,
   fieldTypes: Map<string, string>,
@@ -251,7 +249,7 @@ async function processFields(
 }
 
 async function fetchMetaobjectEntries(
-  source: { shop: string; token: string },
+  source: { shop: string },
   type: string,
 ): Promise<MetaobjectEntry[]> {
   const entries: MetaobjectEntry[] = [];
@@ -261,7 +259,6 @@ async function fetchMetaobjectEntries(
   while (hasNextPage) {
     const data: MetaobjectsQueryResponse = await sourceAdminGraphql({
       shop: source.shop,
-      token: source.token,
       query: `#graphql
         query FetchMetaobjectEntries($type: String!, $after: String) {
           metaobjects(type: $type, first: 50, after: $after) {
@@ -460,7 +457,6 @@ async function ensureWriteAccess(
 
 export async function syncMetaobjectContent({
   sourceShop,
-  sourceToken,
   admin,
   jobId,
   metaobjectTypes,
@@ -469,7 +465,6 @@ export async function syncMetaobjectContent({
   metaobjectNameByType = new Map(),
 }: {
   sourceShop: string;
-  sourceToken: string;
   admin: AdminGraphqlClient;
   jobId: string;
   metaobjectTypes: string[];
@@ -481,7 +476,7 @@ export async function syncMetaobjectContent({
   let copiedEntries = 0;
   let skippedEntries = 0;
   let failedEntries = 0;
-  const source = { shop: sourceShop, token: sourceToken };
+  const source = { shop: sourceShop };
   const fileCache = new Map<string, string | null>();
 
   for (const type of metaobjectTypes) {

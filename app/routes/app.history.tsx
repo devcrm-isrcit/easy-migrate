@@ -50,8 +50,8 @@ const STATUS_LABELS: Record<string, string> = {
   skipped: "Skipped",
   conflict: "Conflict",
   valid: "Connected",
-  invalid: "Token invalid",
-  cleared: "Session cleared",
+  invalid: "Connection failed",
+  cleared: "Disconnected",
 };
 
 interface FileHistoryJob {
@@ -546,8 +546,8 @@ function RunCard({
             <p className="em-error-box__title">Migration failed</p>
             <p className="em-error-box__code">{errorMessage}</p>
             <p className="em-error-box__hint">
-              Check that the source token is still valid and has permission to
-              read this data, then run the migration again.
+              Check that Easy Migrate is still installed on the source store
+              and the stores are still connected, then run the migration again.
             </p>
           </div>
         </div>
@@ -648,8 +648,8 @@ export default function HistoryPage() {
       ? [
           { label: "Any Status", value: "all" },
           { label: "Connected", value: "valid" },
-          { label: "Token invalid", value: "invalid" },
-          { label: "Session cleared", value: "cleared" },
+          { label: "Connection failed", value: "invalid" },
+          { label: "Disconnected", value: "cleared" },
         ]
       : [
           { label: "Any Status", value: "all" },

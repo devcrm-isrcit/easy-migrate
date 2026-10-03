@@ -1,5 +1,6 @@
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { deleteLinksForShop } from "../lib/source-link.server";
 
 export const action = async ({ request }) => {
   const { shop, session, topic } = await authenticate.webhook(request);
@@ -11,6 +12,10 @@ export const action = async ({ request }) => {
   if (session) {
     await db.session.deleteMany({ where: { shop } });
   }
+
+  // Links were approved by someone with the app on both stores; an uninstall
+  // ends that, so the other store must connect again with a new code.
+  await deleteLinksForShop(shop);
 
   return new Response();
 };

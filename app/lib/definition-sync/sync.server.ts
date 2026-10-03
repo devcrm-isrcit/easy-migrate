@@ -680,12 +680,10 @@ async function syncMetaobjectsWithDependencies({
 
 export async function buildDefinitionScanPreview({
   sourceShop,
-  sourceToken,
   targetShop,
   admin,
 }: {
   sourceShop: string;
-  sourceToken: string;
   targetShop: string;
   admin: NonNullable<AdminGraphqlClient>;
 }): Promise<DefinitionScanPreview> {
@@ -695,17 +693,17 @@ export async function buildDefinitionScanPreview({
     targetShop,
     admin,
     sourceMetafields: fetchMetafieldDefinitions({
-      source: { shop: sourceShop, token: sourceToken },
+      source: { shop: sourceShop },
     }),
     sourceMetaobjects: fetchMetaobjectDefinitions({
-      source: { shop: sourceShop, token: sourceToken },
+      source: { shop: sourceShop },
     }),
   });
 }
 
 /**
  * The comparison half of a scan, with the source side supplied rather than
- * fetched. The live token flow hands in in-flight fetches against the source
+ * fetched. The live store flow hands in in-flight fetches against the source
  * store; the CSV import hands in definitions parsed out of an uploaded file.
  */
 export async function buildDefinitionScanPreviewFromDefinitions({
@@ -770,7 +768,7 @@ export async function buildDefinitionScanPreviewFromDefinitions({
       .map((item) =>
         sourceKind === "csv"
           ? `The CSV contains no ${item.ownerType} metafield definitions because the store it was exported from couldn't read them.`
-          : `Source token can't read ${item.ownerType} metafield definitions with the current source custom-app scopes.`,
+          : `Easy Migrate can't read ${item.ownerType} metafield definitions on the source store with its installed app scopes.`,
       ),
     ...targetMetafields.ownerTypeAccess
       .filter((item) => !item.accessible)
@@ -875,7 +873,6 @@ export async function buildDefinitionScanPreviewFromDefinitions({
 
 export async function runDefinitionSync({
   sourceShop,
-  sourceToken,
   targetShop,
   admin,
   selectedMetaobjectTypes,
@@ -884,7 +881,6 @@ export async function runDefinitionSync({
   progress = silentSyncProgress,
 }: {
   sourceShop: string;
-  sourceToken: string;
   targetShop: string;
   admin: NonNullable<AdminGraphqlClient>;
   selectedMetaobjectTypes?: string[];
@@ -894,7 +890,6 @@ export async function runDefinitionSync({
 }) {
   const preview = await buildDefinitionScanPreview({
     sourceShop,
-    sourceToken,
     targetShop,
     admin,
   });
@@ -902,7 +897,6 @@ export async function runDefinitionSync({
   return runDefinitionSyncFromPreview({
     preview,
     sourceShop,
-    sourceToken,
     targetShop,
     admin,
     selectedMetaobjectTypes,
@@ -921,7 +915,6 @@ export async function runDefinitionSync({
 export async function runDefinitionSyncFromPreview({
   preview,
   sourceShop,
-  sourceToken,
   targetShop,
   admin,
   selectedMetaobjectTypes,
@@ -933,7 +926,6 @@ export async function runDefinitionSyncFromPreview({
 }: {
   preview: DefinitionScanPreview;
   sourceShop: string;
-  sourceToken?: string;
   targetShop: string;
   admin: NonNullable<AdminGraphqlClient>;
   selectedMetaobjectTypes?: string[];
@@ -944,7 +936,7 @@ export async function runDefinitionSyncFromPreview({
   /** Live progress for the page; see progress.server.ts. */
   progress?: SyncProgressReporter;
 }) {
-  if (copyContent && !sourceToken) {
+  if (copyContent && sourceKind !== "store") {
     throw new Error(
       "Copying metaobject entries needs a live source store connection. A definitions CSV carries no entry values.",
     );
@@ -1332,8 +1324,7 @@ export async function runDefinitionSyncFromPreview({
 
         const contentResult = await syncMetaobjectContent({
           sourceShop,
-          // Guarded at the top of this function: copyContent requires a token.
-          sourceToken: sourceToken as string,
+          // Guarded at the top of this function: copyContent needs a live store.
           admin,
           jobId: job.id,
           metaobjectTypes: allMetaobjectTypes,

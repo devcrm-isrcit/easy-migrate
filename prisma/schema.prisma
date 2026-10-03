@@ -44,6 +44,26 @@ model SourceStoreCredential {
   updatedAt       DateTime @updatedAt
 }
 
+// The store a destination store copies from. Created by redeeming a
+// ConnectionCode, which proves the merchant has Easy Migrate on both stores.
+model SourceLink {
+  targetShop String   @id
+  sourceShop String
+  createdAt  DateTime @default(now())
+
+  @@index([sourceShop])
+}
+
+// One-time code a store generates so another store can use it as a source.
+model ConnectionCode {
+  code       String   @id
+  sourceShop String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([sourceShop])
+}
+
 model DefinitionSyncJob {
   id                            String              @id @default(cuid())
   sourceShop                    String
